@@ -1,0 +1,45 @@
+# .github/workflows/update-changelog.yml
+name: Update Changelog
+
+on:
+  workflow_call:
+    inputs:
+      branch:
+        description: "Branch su cui committare"
+        required: false
+        default: "main"
+        type: string
+      changelog-file:
+        description: "Percorso del CHANGELOG"
+        required: false
+        default: "CHANGELOG.md"
+        type: string
+    secrets:
+      GH_TOKEN:
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.branch }}
+
+      - name: Update Changelog
+        uses: stefanzweifel/changelog-updater-action@v1
+        with:
+          latest-version: ${{ github.event.release.name }}
+          release-notes: ${{ github.event.release.body }}
+
+      - name: Commit updated CHANGELOG
+        uses: stefanzweifel/git-auto-commit-action@v6
+        with:
+          branch: ${{ inputs.branch }}
+          commit_message: Update CHANGELOG
+          file_pattern: ${{ inputs.changelog-file }}
