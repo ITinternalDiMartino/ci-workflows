@@ -42,4 +42,3 @@ jobs:
 
       - name: Run PHPStan
         run: ./vendor/bin/phpstan analyse --configuration=${{ inputs.phpstan-config }} --error-format=github
-`
