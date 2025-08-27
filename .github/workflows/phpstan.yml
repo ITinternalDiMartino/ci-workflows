@@ -1,0 +1,42 @@
+name: PHPStan
+
+on:
+  workflow_call:
+    inputs:
+      php-version:
+        description: "Versione PHP da usare"
+        required: false
+        default: "8.4"
+        type: string
+      phpstan-config:
+        description: "Percorso del file di configurazione PHPStan"
+        required: false
+        default: "phpstan.neon.dist"
+        type: string
+    secrets:
+      GH_TOKEN:
+        required: true
+
+jobs:
+  phpstan:
+    name: PHPStan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ inputs.php-version }}
+          coverage: none
+
+      - name: Configure Composer Authentication
+        run: composer config --global --auth github-oauth.github.com ${{ secrets.GH_TOKEN }}
+
+      - name: Install composer dependencies
+        uses: ramsey/composer-install@v3
+
+      - name: Run PHPStan
+        run: ./vendor/bin/phpstan analyse --configuration=${{ inputs.phpstan-config }} --error-format=github
+`
