@@ -1,0 +1,35 @@
+name: Run ESLint
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: "Versione di Node.js"
+        required: false
+        default: "22"
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  eslint:
+    name: Run ESLint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Run ESLint
+        run: npx eslint . --ext .js,.ts,.tsx
