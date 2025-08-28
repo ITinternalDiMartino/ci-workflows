@@ -48,10 +48,7 @@ jobs:
         with:
           path: vendor
           key: composer-${{ hashFiles('**/composer.lock') }}
-          restore-keys: composer-
-
-      - name: Configure Composer Authentication
-        run: composer config --global --auth github-oauth.github.com ${{ secrets.GH_TOKEN }}
+          restore-keys: composer-      
 
       - name: Setup PHP and Composer
         uses: shivammathur/setup-php@v2
@@ -61,6 +58,9 @@ jobs:
           tools: composer
           extensions: json, dom, curl, libxml, mbstring
           ini-values: memory_limit=512M, max_execution_time=180, display_errors=On
+
+      - name: Configure Composer Authentication
+        run: composer config --global --auth github-oauth.github.com ${{ secrets.GH_TOKEN }}
 
       - name: Install PHP Dependencies
         run: composer install --no-interaction --prefer-dist --no-progress
