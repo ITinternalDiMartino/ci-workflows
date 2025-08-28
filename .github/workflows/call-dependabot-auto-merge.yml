@@ -1,0 +1,11 @@
+name: Dependabot Auto Merge
+
+on: pull_request_target
+
+permissions:
+  pull-requests: write
+  contents: write
+
+jobs:
+  dependabot:
+    uses: ITinternalDiMartino/ci-workflows/.github/workflows/dependabot-auto-merge.yml@main
