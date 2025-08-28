@@ -1,0 +1,16 @@
+name: Build Frontend
+
+on:
+  pull_request:
+    branches: ["staging"]
+    paths:
+      - "package.json"
+      - "package-lock.json"
+      - "**/*.js"
+      - "**/*.ts"
+      - "**/*.tsx"
+      - ".github/workflows/run-build.yml"
+
+jobs:
+  call-workflow:
+    uses: ITinternalDiMartino/ci-workflows/.github/workflows/build-frontend.yml@main
