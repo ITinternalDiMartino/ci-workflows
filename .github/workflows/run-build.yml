@@ -2,6 +2,12 @@ name: Build Frontend
 
 on:
   workflow_call:
+    inputs:
+      node-version:
+        description: "Versione di Node.js"
+        required: false
+        default: "22"
+        type: string
 
 jobs:
   build:
@@ -14,10 +20,10 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ inputs.node-version }}
           cache: npm
 
-      - name: Install Dependencies
+      - name: Install Node Dependencies
         run: npm ci
 
       - name: Build Assets
