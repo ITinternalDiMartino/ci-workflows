@@ -17,6 +17,9 @@ on:
       GH_TOKEN:
         required: true
 
+permissions:
+  contents: write
+
 jobs:
   phpstan:
     name: PHPStan
