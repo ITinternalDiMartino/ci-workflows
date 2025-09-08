@@ -1,37 +1,60 @@
-name: Run Laravel Tests
+name: Full CI
 
 on:
   workflow_call:
     inputs:
       php-versions:
-        description: "Lista delle versioni PHP in formato JSON"
+        description: 'Lista delle versioni PHP in formato JSON'
         required: false
         default: '["8.3"]'
+        type: string
+      node-version:
+        description: 'Versione di Node.js'
+        required: false
+        default: '22'
         type: string
     secrets:
       GH_TOKEN:
         required: true
 
 jobs:
+  build-frontend:
+    runs-on: ubuntu-latest
+    name: Build Frontend
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+
+      - name: Install Node Dependencies
+        run: npm ci
+
+      - name: Build Assets
+        run: npm run build
+
   laravel-tests:
+    needs: build-frontend
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       matrix:
         php: ${{ fromJson(inputs.php-versions) }}
       fail-fast: true
-
     name: PHP ${{ matrix.php }}
-
     services:
       mysql:
         image: mysql:8.0
         env:
           MYSQL_DATABASE: tests
           MYSQL_ALLOW_EMPTY_PASSWORD: yes
-          MYSQL_ROOT_PASSWORD: ""
+          MYSQL_ROOT_PASSWORD: ''
         ports:
-          - "3306:3306"
+          - '3306:3306'
         options: >-
           --health-cmd="mysqladmin ping"
           --health-interval=10s
@@ -48,7 +71,7 @@ jobs:
         with:
           path: vendor
           key: composer-${{ hashFiles('**/composer.lock') }}
-          restore-keys: composer-      
+          restore-keys: composer-
 
       - name: Setup PHP and Composer
         uses: shivammathur/setup-php@v2
