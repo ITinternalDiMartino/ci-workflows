@@ -18,27 +18,7 @@ on:
         required: true
 
 jobs:
-  build-frontend:
-    runs-on: ubuntu-latest
-    name: Build Frontend
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v5
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ inputs.node-version }}
-          cache: npm
-
-      - name: Install Node Dependencies
-        run: npm ci
-
-      - name: Build Assets
-        run: npm run build
-
   laravel-tests:
-    needs: build-frontend
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -66,6 +46,20 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v5
 
+      # --- Frontend build ---
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+
+      - name: Install Node Dependencies
+        run: npm ci
+
+      - name: Build Assets
+        run: npm run build
+
+      # --- PHP / Laravel ---
       - name: Cache Composer dependencies
         uses: actions/cache@v4
         with:
