@@ -4,14 +4,14 @@ on:
   workflow_call:
     inputs:
       php-versions:
-        description: 'Lista delle versioni PHP in formato JSON'
+        description: "Lista delle versioni PHP in formato JSON"
         required: false
         default: '["8.3"]'
         type: string
       node-version:
-        description: 'Versione di Node.js'
+        description: "Versione di Node.js"
         required: false
-        default: '22'
+        default: "22"
         type: string
     secrets:
       GH_TOKEN:
@@ -32,9 +32,9 @@ jobs:
         env:
           MYSQL_DATABASE: tests
           MYSQL_ALLOW_EMPTY_PASSWORD: yes
-          MYSQL_ROOT_PASSWORD: ''
+          MYSQL_ROOT_PASSWORD: ""
         ports:
-          - '3306:3306'
+          - "3306:3306"
         options: >-
           --health-cmd="mysqladmin ping"
           --health-interval=10s
@@ -46,7 +46,7 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v5
 
-      # --- Frontend build ---
+      # --- Node ---
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
@@ -56,10 +56,7 @@ jobs:
       - name: Install Node Dependencies
         run: npm ci
 
-      - name: Build Assets
-        run: npm run build
-
-      # --- PHP / Laravel ---
+      # --- Composer ---
       - name: Cache Composer dependencies
         uses: actions/cache@v4
         with:
@@ -82,6 +79,11 @@ jobs:
       - name: Install PHP Dependencies
         run: composer install --no-interaction --prefer-dist --no-progress
 
+        # --- Build ---
+      - name: Build Assets
+        run: npm run build
+
+        # --- Laravel ---
       - name: Environment configuration
         run: |
           cp .env.example .env
