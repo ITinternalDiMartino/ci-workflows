@@ -58,7 +58,7 @@ jobs:
 
       # --- Composer ---
       - name: Cache Composer dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: vendor
           key: composer-${{ hashFiles('**/composer.lock') }}
