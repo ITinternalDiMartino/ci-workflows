@@ -39,7 +39,7 @@ jobs:
         run: composer config --global --auth github-oauth.github.com ${{ secrets.GH_TOKEN }}
 
       - name: Install composer dependencies
-        uses: ramsey/composer-install@v3
+        uses: ramsey/composer-install@v4
 
       - name: Run PHPStan
         run: ./vendor/bin/phpstan analyse --configuration=${{ inputs.phpstan-config }} --error-format=github
