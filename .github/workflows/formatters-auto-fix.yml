@@ -4,9 +4,9 @@ on:
   workflow_call:
     inputs:
       node-version:
-        description: 'Versione di Node.js'
+        description: "Versione di Node.js"
         required: false
-        default: '22'
+        default: "22"
         type: string
 
 permissions:
@@ -24,8 +24,11 @@ jobs:
         with:
           ref: ${{ github.head_ref }}
 
-      - name: Fix PHP code style issues
-        uses: aglipanci/laravel-pint-action@2.6
+      - name: Install PHP dependencies
+        run: composer install --no-interaction --no-progress --prefer-dist
+
+      - name: Run Pint
+        run: ./vendor/bin/pint
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -42,4 +45,4 @@ jobs:
       - name: Commit changes
         uses: stefanzweifel/git-auto-commit-action@v7
         with:
-          commit_message: 'style: pint & prettier auto fix '
+          commit_message: "style: pint & prettier auto fix"
