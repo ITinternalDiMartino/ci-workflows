@@ -1,4 +1,4 @@
-name: Fix Prettier Code Style
+name: Prettier Check
 
 on:
   workflow_call:
@@ -9,13 +9,10 @@ on:
         default: "22"
         type: string
 
-permissions:
-  contents: write
-  pull-requests: write
-
 jobs:
-  prettier:
+  prettier-check:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
 
     steps:
       - name: Checkout code
@@ -30,10 +27,5 @@ jobs:
       - name: Install Node dependencies
         run: npm ci
 
-      - name: Run Prettier
-        run: npx prettier --write .
-
-      - name: Commit changes
-        uses: stefanzweifel/git-auto-commit-action@v7
-        with:
-          commit_message: "style: prettier auto fix"
+      - name: Run Prettier check
+        run: npx prettier --check .

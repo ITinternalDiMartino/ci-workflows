@@ -1,0 +1,25 @@
+name: Pint Check
+
+on:
+  workflow_call:
+    secrets:
+      GH_TOKEN:
+        required: true
+
+jobs:
+  pint-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Configure Composer Authentication
+        run: composer config --global --auth github-oauth.github.com ${{ secrets.GH_TOKEN }}
+
+      - name: Install PHP dependencies
+        run: composer install --no-interaction --no-progress --prefer-dist
+
+      - name: Run Pint check
+        run: ./vendor/bin/pint --test
