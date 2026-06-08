@@ -33,7 +33,18 @@ jobs:
         run: |
           curl -Ls https://github.com/phpmetrics/PhpMetrics/releases/latest/download/phpmetrics.phar -o phpmetrics
           chmod +x phpmetrics
-          sudo mv phpmetrics /usr/local/bin/phpmetrics
+      - name: Run phpMetrics (PR branch)
+        run: ./phpmetrics --report-json=pr.json app/
 
-      - name: Run phpMetrics diff
-        run: php artisan php-metrics-diff --base-branch=${{ github.base_ref }} --source=app/
+      - name: Checkout base branch
+        run: |
+          git fetch origin ${{ github.base_ref }}
+          git checkout origin/${{ github.base_ref }}
+      - name: Run phpMetrics (base branch)
+        run: ./phpmetrics --report-json=base.json app/
+
+      - name: Restore PR branch
+        run: git checkout -
+
+      - name: Diff metrics
+        run: php artisan php-metrics-diff base.json pr.json
