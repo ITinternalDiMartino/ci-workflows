@@ -1,0 +1,39 @@
+name: PHP Metrics - PR Quality Gate
+
+on:
+  workflow_call:
+    secrets:
+      GH_TOKEN:
+        required: true
+
+jobs:
+  phpmetrics:
+    name: phpMetrics diff
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          tools: composer
+
+      - name: Configure Composer Authentication
+        run: composer config --global --auth github-oauth.github.com ${{ secrets.GH_TOKEN }}
+
+      - name: Install dependencies
+        run: composer install --no-interaction --no-progress --prefer-dist
+
+      - name: Install phpMetrics
+        run: |
+          curl -Ls https://github.com/phpmetrics/PhpMetrics/releases/latest/download/phpmetrics.phar -o phpmetrics
+          chmod +x phpmetrics
+          sudo mv phpmetrics /usr/local/bin/phpmetrics
+
+      - name: Run phpMetrics diff
+        run: php artisan php-metrics-diff --base-branch=${{ github.base_ref }} --source=app/
