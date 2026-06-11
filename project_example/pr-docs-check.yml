@@ -1,0 +1,14 @@
+name: PR Documentation Check
+
+on:
+  pull_request:
+    branches-ignore: ["main", "dev"]
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  pull-requests: read
+  contents: read
+
+jobs:
+  docs-check:
+    uses: ITinternalDiMartino/ci-workflows/.github/workflows/docs-check.yml@main

@@ -1,0 +1,13 @@
+name: Pint check
+on:
+  pull_request:
+    branches-ignore: ["main", "dev"]
+    paths:
+      - "**.php"
+      - ".github/workflows/pint-check.yml"
+
+jobs:
+  formatters:
+    uses: ITinternalDiMartino/ci-workflows/.github/workflows/pint-check.yml@main
+    secrets:
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}

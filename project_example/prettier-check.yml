@@ -1,0 +1,14 @@
+name: Prettier check
+
+on:
+  pull_request:
+    branches-ignore: ["main", "dev"]
+    paths:
+      - "**/*.js"
+      - "**/*.ts"
+      - "**/*.tsx"
+      - ".github/workflows/prettier-check.yml"
+
+jobs:
+  formatters:
+    uses: ITinternalDiMartino/ci-workflows/.github/workflows/prettier-check.yml@main

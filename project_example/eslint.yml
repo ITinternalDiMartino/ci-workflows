@@ -1,0 +1,17 @@
+name: Run Eslint
+
+on:
+  pull_request:
+    branches-ignore: ["main", "dev"]
+    paths:
+      - "**/*.js"
+      - "**/*.ts"
+      - "**/*.tsx"
+      - ".github/workflows/eslint.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  call-workflow:
+    uses: ITinternalDiMartino/ci-workflows/.github/workflows/eslint.yml@main
