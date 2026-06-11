@@ -1,0 +1,44 @@
+on:
+  workflow_call:
+
+jobs:
+  docs-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate PR checklist + docs rules
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.pull_request.body || "";
+
+            const checkedNoChanges = body.includes("- [x] Nessuna modifica funzionale");
+            const checkedDocs = body.includes("- [x] Aggiornata documentazione");
+
+            // Regola 1: almeno una opzione selezionata
+            if (!checkedNoChanges && !checkedDocs) {
+              core.setFailed("Devi selezionare almeno una opzione nel blocco 'Impatto sulla documentazione'.");
+              return;
+            }
+
+            // Se è selezionata "Aggiornata documentazione", controlla i file modificati
+            if (checkedDocs) {
+              const { data: files } = await github.rest.pulls.listFiles({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.payload.pull_request.number,
+              });
+
+              const docsChanged = files.some(f =>
+                f.filename.startsWith("docs/")
+              );
+
+              if (!docsChanged) {
+                core.setFailed(
+                  "Hai selezionato 'Aggiornata documentazione' ma non ci sono modifiche dentro la cartella docs/."
+                );
+              }
+            }
