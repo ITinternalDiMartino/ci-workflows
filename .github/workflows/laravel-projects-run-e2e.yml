@@ -79,6 +79,12 @@ jobs:
       - name: Install PHP Dependencies
         run: composer install --no-interaction --prefer-dist --no-progress
 
+      - name: Environment configuration
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+          php artisan config:clear
+
       - name: Build Assets
         run: npm run build
 
@@ -94,17 +100,8 @@ jobs:
           sudo apt-get install -y libnss3 libatk-bridge2.0-0 libdrm2 \
             libxcomposite1 libxdamage1 libxrandr2 libgbm1
 
-      - name: Environment configuration
-        run: |
-          cp .env.example .env
-          php artisan key:generate
-          php artisan config:clear
-
       - name: Run Migrations
         run: php artisan migrate --force
-
-      - name: Start Web Server
-        run: php artisan serve --host=127.0.0.1 --port=8000 &
 
       - name: Run E2E Tests
         run: php artisan test ${{ inputs.test-path }}
@@ -115,7 +112,6 @@ jobs:
           DB_DATABASE: tests
           DB_USERNAME: root
           DB_PASSWORD:
-          APP_URL: http://127.0.0.1:8000
 
       - name: Upload test results
         if: always()
