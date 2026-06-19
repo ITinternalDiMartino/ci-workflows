@@ -85,19 +85,19 @@ jobs:
       - name: Build Assets
         run: npm run build
 
-      - name: Install Playwright Browsers
-        if: ${{ inputs.run-e2e == true }}
-        run: |
-          npx playwright install chromium
-          sudo apt-get install -y libnss3 libatk-bridge2.0-0 libdrm2 \
-            libxcomposite1 libxdamage1 libxrandr2 libgbm1
-
       - name: Cache Playwright browsers
         if: ${{ inputs.run-e2e == true }}
         uses: actions/cache@v5
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+
+      - name: Install Playwright Browsers
+        if: ${{ inputs.run-e2e == true }}
+        run: |
+          npx playwright install chromium
+          sudo apt-get install -y libnss3 libatk-bridge2.0-0 libdrm2 \
+            libxcomposite1 libxdamage1 libxrandr2 libgbm1
 
       - name: Environment configuration
         run: |
@@ -108,6 +108,10 @@ jobs:
       - name: Run Migrations
         run: php artisan migrate --force
 
+      - name: Start Web Server
+        if: ${{ inputs.run-e2e == true }}
+        run: php artisan serve --host=127.0.0.1 --port=8000 &
+
       - name: Run Tests
         run: php artisan test --parallel
         env:
@@ -117,6 +121,7 @@ jobs:
           DB_DATABASE: tests
           DB_USERNAME: root
           DB_PASSWORD:
+          APP_URL: http://127.0.0.1:8000
 
       - name: Upload test results
         if: always()
