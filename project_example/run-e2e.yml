@@ -1,0 +1,19 @@
+name: E2E Tests
+
+on:
+  pull_request:
+    branches-ignore: ["main", "dev"]
+    paths:
+      - "**/*.php"
+      - "tests/Browser/**"
+      - ".github/workflows/run-e2e.yml"
+
+jobs:
+  call-workflow:
+    continue-on-error: true
+    uses: ITinternalDiMartino/ci-workflows/.github/workflows/laravel-projects-run-e2e.yml@main
+    with:
+      php-version: "8.3"
+      test-path: "tests/Browser"
+    secrets:
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}

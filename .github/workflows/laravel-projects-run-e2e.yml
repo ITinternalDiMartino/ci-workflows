@@ -1,31 +1,33 @@
-name: Full CI
+name: E2E Tests
 
 on:
   workflow_call:
     inputs:
-      php-versions:
-        description: "Lista delle versioni PHP in formato JSON"
+      php-version:
+        description: "Versione PHP"
         required: false
-        default: '["8.3"]'
+        default: "8.3"
         type: string
       node-version:
         description: "Versione di Node.js"
         required: false
         default: "22"
         type: string
+      test-path:
+        description: "Path o gruppo dei test E2E (es. tests/Browser o --group=browser)"
+        required: false
+        default: "tests/Browser"
+        type: string
     secrets:
       GH_TOKEN:
         required: true
 
 jobs:
-  laravel-tests:
+  e2e-tests:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    strategy:
-      matrix:
-        php: ${{ fromJson(inputs.php-versions) }}
-      fail-fast: true
-    name: PHP ${{ matrix.php }}
+    timeout-minutes: 20
+    name: E2E Browser Tests
+
     services:
       mysql:
         image: mysql:8.0
@@ -65,7 +67,7 @@ jobs:
       - name: Setup PHP and Composer
         uses: shivammathur/setup-php@v2
         with:
-          php-version: ${{ matrix.php }}
+          php-version: ${{ inputs.php-version }}
           coverage: xdebug
           tools: composer
           extensions: json, dom, curl, libxml, mbstring
@@ -80,6 +82,18 @@ jobs:
       - name: Build Assets
         run: npm run build
 
+      - name: Cache Playwright browsers
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+
+      - name: Install Playwright Browsers
+        run: |
+          npx playwright install chromium
+          sudo apt-get install -y libnss3 libatk-bridge2.0-0 libdrm2 \
+            libxcomposite1 libxdamage1 libxrandr2 libgbm1
+
       - name: Environment configuration
         run: |
           cp .env.example .env
@@ -89,8 +103,11 @@ jobs:
       - name: Run Migrations
         run: php artisan migrate --force
 
-      - name: Run Tests
-        run: php artisan test --parallel
+      - name: Start Web Server
+        run: php artisan serve --host=127.0.0.1 --port=8000 &
+
+      - name: Run E2E Tests
+        run: php artisan test ${{ inputs.test-path }}
         env:
           DB_CONNECTION: mysql
           DB_HOST: 127.0.0.1
@@ -98,14 +115,15 @@ jobs:
           DB_DATABASE: tests
           DB_USERNAME: root
           DB_PASSWORD:
+          APP_URL: http://127.0.0.1:8000
 
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: test-results-php-${{ matrix.php }}
+          name: e2e-results
           path: |
             storage/logs/*
-            coverage/*
+            tests/Browser/screenshots/*
           retention-days: 7
           if-no-files-found: warn
