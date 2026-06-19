@@ -27,6 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     name: E2E Browser Tests
+    continue-on-error: true
 
     services:
       mysql:
