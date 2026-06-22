@@ -7,7 +7,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Validate PR checklist + docs rules
         uses: actions/github-script@v9
