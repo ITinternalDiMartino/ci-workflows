@@ -1,0 +1,17 @@
+name: PHPStan check
+
+on:
+  pull_request:
+    branches-ignore: ["main", "dev"]
+    paths:
+      - "**/*.js"
+      - "**/*.ts"
+      - "**/*.tsx"
+      - ".github/workflows/phpstan.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  call-workflow:
+    uses: ITinternalDiMartino/ci-workflows/.github/workflows/phpstan.yml@main
