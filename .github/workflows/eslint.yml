@@ -32,4 +32,4 @@ jobs:
         run: npm ci
 
       - name: Run ESLint
-        run: npx eslint . --ext .js,.ts,.tsx
+        run: npx eslint .
