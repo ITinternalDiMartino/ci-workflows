@@ -2,6 +2,9 @@ name: Pint Check
 
 on:
   workflow_call:
+    secrets:
+      GH_TOKEN:
+        required: false
 
 jobs:
   pint-check:
@@ -11,6 +14,10 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+
+      - name: Configure Composer Authentication
+        if: ${{ secrets.GH_TOKEN != '' }}
+        run: composer config --global --auth github-oauth.github.com ${{ secrets.GH_TOKEN }}
 
       - name: Install PHP dependencies
         run: composer install --no-interaction --no-progress --prefer-dist
