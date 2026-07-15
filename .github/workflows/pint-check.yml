@@ -4,7 +4,7 @@ on:
   workflow_call:
     secrets:
       GH_TOKEN:
-        required: true
+        required: false
 
 jobs:
   pint-check:
@@ -16,6 +16,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Configure Composer Authentication
+        if: ${{ secrets.GH_TOKEN != '' }}
         run: composer config --global --auth github-oauth.github.com ${{ secrets.GH_TOKEN }}
 
       - name: Install PHP dependencies
