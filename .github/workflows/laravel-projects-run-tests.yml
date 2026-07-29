@@ -52,6 +52,14 @@ jobs:
           node-version: ${{ inputs.node-version }}
           cache: npm
 
+      - name: Configure git authentication for private npm dependencies
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        if: ${{ env.GH_TOKEN != '' }}
+        run: |
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+          git config --global --add url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "ssh://git@github.com/"
+
       - name: Install Node Dependencies
         run: npm ci
 
