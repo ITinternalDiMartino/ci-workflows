@@ -52,6 +52,23 @@ jobs:
           node-version: ${{ inputs.node-version }}
           cache: npm
 
+      - name: Configure git authentication for private npm dependencies
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        if: ${{ env.GH_TOKEN != '' }}
+        run: |
+          # actions/checkout installs a repository-scoped credential, in recent versions
+          # through a config file pulled in via includeIf. It wins over anything we add and
+          # cannot read other private repositories, so npm fails on a private dependency.
+          # Drop it and authenticate with GH_TOKEN, which spans the organisation and still
+          # allows pushing. npm also normalises GitHub URLs to ssh, hence the second rule.
+          for key in $(git config --local --name-only --get-regexp '^includeif\.' || true); do
+            git config --local --unset-all "$key" || true
+          done
+          git config --local --unset-all http."https://github.com/".extraheader || true
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+          git config --global --add url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "ssh://git@github.com/"
+
       - name: Install Node Dependencies
         run: npm ci
 
