@@ -57,8 +57,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         if: ${{ env.GH_TOKEN != '' }}
         run: |
-          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
-          git config --global --add url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "ssh://git@github.com/"
+          # npm normalises GitHub URLs to ssh, which the runner cannot authenticate.
+          git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+          # actions/checkout writes a repo-local extraheader carrying a token scoped to
+          # this repository only. It takes precedence over any global credential, so npm
+          # would authenticate as that token and get "Repository not found" for the
+          # private dependency. Replace it with GH_TOKEN, which spans the organisation.
+          AUTH="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git config --local --replace-all http."https://github.com/".extraheader "AUTHORIZATION: basic ${AUTH}"
+          git config --global http."https://github.com/".extraheader "AUTHORIZATION: basic ${AUTH}"
 
       - name: Install Node Dependencies
         run: npm ci
