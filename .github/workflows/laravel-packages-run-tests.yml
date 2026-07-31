@@ -36,13 +36,15 @@ jobs:
     runs-on: ${{ fromJson(inputs.os)[0] }}
     timeout-minutes: 5
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         os: ${{ fromJson(inputs.os) }}
         php: ${{ fromJson(inputs.php-versions) }}
         laravel: ${{ fromJson(inputs.laravel-versions) }}
         stability: ${{ fromJson(inputs.stability) }}
         include:
+          - laravel: 13.*
+            testbench: 11.*
           - laravel: 12.*
             testbench: 10.*
           - laravel: 11.*
