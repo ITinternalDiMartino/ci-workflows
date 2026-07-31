@@ -36,7 +36,7 @@ jobs:
     runs-on: ${{ fromJson(inputs.os)[0] }}
     timeout-minutes: 5
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         os: ${{ fromJson(inputs.os) }}
         php: ${{ fromJson(inputs.php-versions) }}
