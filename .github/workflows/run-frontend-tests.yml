@@ -8,6 +8,16 @@ on:
         required: false
         default: "22"
         type: string
+      php-version:
+        description: "Versione PHP usata per generare i file di Wayfinder"
+        required: false
+        default: "8.3"
+        type: string
+      generate-wayfinder:
+        description: "Genera i file TypeScript di Wayfinder, che sono in gitignore e senza i quali gli import `@/actions` e `@/routes` non risolvono"
+        required: false
+        default: true
+        type: boolean
       test-script:
         description: "Script npm che esegue la suite front-end"
         required: false
@@ -20,7 +30,7 @@ on:
         type: string
     secrets:
       GH_TOKEN:
-        description: "Token per le dipendenze npm ospitate su repository privati dell'organizzazione"
+        description: "Token per le dipendenze ospitate su repository privati dell'organizzazione"
         required: false
 
 jobs:
@@ -33,7 +43,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -60,6 +70,47 @@ jobs:
 
       - name: Install Node dependencies
         run: npm ci
+
+      # I file che Wayfinder scrive in resources/js/{actions,routes,wayfinder} sono in
+      # gitignore: in sviluppo li rigenera il plugin Vite, ma vitest non lo carica, e sul
+      # runner mancano del tutto. Senza di loro ogni componente che importa `@/actions/…`
+      # non risolve e il file di test fallisce prima di eseguire un'asserzione.
+      - name: Setup PHP
+        if: ${{ inputs.generate-wayfinder }}
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ inputs.php-version }}
+          coverage: none
+
+      - name: Configure Composer authentication
+        if: ${{ inputs.generate-wayfinder }}
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          # Il token è opzionale: senza questo controllo il comando fallirebbe per
+          # argomento mancante, invece di lasciar parlare composer install.
+          if [ -n "$GH_TOKEN" ]; then
+            composer config --global --auth github-oauth.github.com "$GH_TOKEN"
+          else
+            echo "::warning::GH_TOKEN assente: i pacchetti Composer privati dell'organizzazione non saranno scaricabili."
+          fi
+
+      - name: Install composer dependencies
+        if: ${{ inputs.generate-wayfinder }}
+        uses: ramsey/composer-install@v4
+
+      - name: Generate Wayfinder files
+        if: ${{ inputs.generate-wayfinder }}
+        run: |
+          # artisan legge la configurazione all'avvio: senza .env e senza APP_KEY il
+          # comando non arriva a registrare le rotte da cui ricava i file.
+          if [ ! -f .env ] && [ -f .env.example ]; then
+            cp .env.example .env
+          fi
+          php artisan key:generate --force
+          # `--with-form` allinea l'output a `formVariants: true` del plugin Vite: su un
+          # progetto che non usa le varianti form aggiunge solo righe che nessuno importa.
+          php artisan wayfinder:generate --with-form
 
       - name: Run frontend tests
         run: npm run ${{ inputs.test-script }}
