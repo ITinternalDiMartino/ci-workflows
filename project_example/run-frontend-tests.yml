@@ -1,0 +1,19 @@
+name: Run Frontend Tests
+
+on:
+  pull_request:
+    branches-ignore: ["main", "dev"]
+    paths:
+      - "**/*.ts"
+      - "**/*.tsx"
+      - "**/*.js"
+      - "package.json"
+      - "package-lock.json"
+      - "vitest.config.ts"
+      - ".github/workflows/run-frontend-tests.yml"
+
+jobs:
+  call-workflow:
+    uses: ITinternalDiMartino/ci-workflows/.github/workflows/run-frontend-tests.yml@main
+    secrets:
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}

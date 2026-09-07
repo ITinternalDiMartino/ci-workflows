@@ -1,0 +1,57 @@
+name: Run Frontend Tests
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: "Versione di Node.js"
+        required: false
+        default: "22"
+        type: string
+      test-script:
+        description: "Script npm che esegue la suite front-end"
+        required: false
+        default: "test"
+        type: string
+      timezone:
+        description: "Fuso orario del runner, per non far dipendere le date dalla macchina"
+        required: false
+        default: "Europe/Rome"
+        type: string
+    secrets:
+      GH_TOKEN:
+        description: "Token per le dipendenze npm ospitate su repository privati dell'organizzazione"
+        required: false
+
+jobs:
+  frontend-tests:
+    name: Run Frontend Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
+      TZ: ${{ inputs.timezone }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+
+      # Le dipendenze npm servite da git (i config condivisi dell'organizzazione)
+      # non passano dalle credenziali di actions/checkout, che restano locali al
+      # repository clonato: senza questo header npm ci non le raggiunge.
+      - name: Configure Git authentication for private packages
+        if: env.GH_TOKEN != ''
+        run: |
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Run frontend tests
+        run: npm run ${{ inputs.test-script }}
