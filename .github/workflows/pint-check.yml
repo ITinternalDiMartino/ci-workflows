@@ -2,6 +2,12 @@ name: Pint Check
 
 on:
   workflow_call:
+    inputs:
+      php-version:
+        description: "Versione PHP da usare"
+        required: false
+        default: "8.3"
+        type: string
     secrets:
       GH_TOKEN:
         required: false
@@ -14,6 +20,12 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ inputs.php-version }}
+          coverage: none
 
       - name: Configure Composer Authentication
         env:
