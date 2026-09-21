@@ -1,0 +1,62 @@
+name: Deploy
+
+# Esempio di chiamata alla pipeline di deploy condivisa.
+#
+# Prima del primo deploy, sull'Environment GitHub indicato in "environment"
+# vanno create:
+#
+#   vars     RELEASES_PATH   percorso assoluto della directory delle release
+#            SHARED_PATH     percorso assoluto della directory condivisa
+#                            (contiene .env e storage/, persistenti fra release)
+#            CURRENT_PATH    percorso del symlink alla release attiva,
+#                            cioè il document root del vhost
+#            TMP_PATH        directory di transito per l'archivio
+#            PHP_BIN         percorso assoluto del binario PHP sul server
+#                            (es. /usr/local/bin/ea-php84)
+#            APP_NAME        facoltativa: nome applicazione compilato dentro il
+#                            bundle Vite. Se assente si usa il nome del repository
+#
+#   secrets  GH_TOKEN        token con accesso ai repository privati
+#                            dell'organizzazione, per composer e npm
+#            SSH_PRIVATE_KEY chiave privata di deploy, con newline finale
+#            SSH_KNOWN_HOSTS contenuto di known_hosts per l'host di destinazione
+#            SSH_HOST        host SSH del server
+#            SSH_USER        utente SSH del server
+#            SSH_PORT        porta SSH del server
+#
+# Sul server, prima del primo deploy, devono già esistere SHARED_PATH/.env e
+# SHARED_PATH/storage/: la pipeline li collega, non li crea.
+
+on:
+  push:
+    branches: ["dev"]
+  workflow_dispatch:
+
+jobs:
+  call-workflow:
+    uses: ITinternalDiMartino/ci-workflows/.github/workflows/laravel-projects-deploy.yml@main
+    with:
+      environment: qat
+      php-version: "8.4"
+      node-version: "22"
+      # va lasciato a false se il progetto ha rotte dichiarate con closure
+      cache-routes: false
+    secrets:
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+      SSH_HOST: ${{ secrets.SSH_HOST }}
+      SSH_USER: ${{ secrets.SSH_USER }}
+      SSH_PORT: ${{ secrets.SSH_PORT }}
+
+# La pipeline espone release, previous e url. Un job successivo può leggerli,
+# per esempio per annotare la release o notificarla altrove:
+#
+#   notify:
+#     needs: call-workflow
+#     runs-on: ubuntu-latest
+#     steps:
+#       - run: |
+#           echo "release ${{ needs.call-workflow.outputs.release }} in linea"
+#           echo "precedente: ${{ needs.call-workflow.outputs.previous }}"
+#           echo "url: ${{ needs.call-workflow.outputs.url }}"

@@ -1,0 +1,767 @@
+name: Deploy
+
+# Pipeline di deploy ereditabile per i progetti Laravel dell'organizzazione.
+#
+# Modello: directory di release numerate + symlink "current" spostato in modo
+# atomico. Il sito continua a servire la release precedente finché lo swap non
+# riesce, quindi un build rotto o una migrazione fallita non mandano giù niente.
+#
+# Rollback: se uno step dopo l'attivazione fallisce, current torna da sé alla
+# release precedente (input auto-rollback). Riporta indietro il codice, non il
+# database: una migrazione già applicata resta applicata, quindi le migrazioni
+# distruttive vanno evitate o spezzate in due deploy. Il riepilogo del run
+# stampa comunque il comando per rifare lo swap a mano.
+#
+# Layout atteso sul server:
+#   <RELEASES_PATH>/<release>/   una directory per release, create da qui
+#   <SHARED_PATH>/.env           configurazione persistente fra le release
+#   <SHARED_PATH>/storage/       storage persistente fra le release
+#   <CURRENT_PATH>               symlink alla release attiva (document root)
+#   <TMP_PATH>/                  area di transito per l'archivio
+#
+# Nota su SC2029: i comandi remoti interpolano variabili con le virgolette
+# doppie, quindi l'espansione avviene sul runner e non sul server. È voluto:
+# i path arrivano dalle vars dell'environment, che il server non conosce. I
+# valori sono racchiusi fra apici singoli nel comando remoto, e gli script
+# più lunghi li ricevono come argomenti posizionali di 'sh -s'. Chi passa
+# shellcheck su questo file lo escluda: SHELLCHECK_OPTS='-e SC2029'.
+#
+# vars richieste sull'Environment indicato da inputs.environment:
+#   RELEASES_PATH, SHARED_PATH, CURRENT_PATH, TMP_PATH, PHP_BIN
+#   APP_NAME (facoltativa: se assente si usa il nome del repository)
+#
+# secrets richiesti: vedi la sezione "secrets" qui sotto.
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "Nome dell'Environment GitHub da cui leggere vars e secrets (es. qat, production)"
+        required: true
+        type: string
+      php-version:
+        description: "Versione di PHP, da allineare a quella del server di destinazione"
+        required: false
+        default: "8.4"
+        type: string
+      php-extensions:
+        description: "Estensioni PHP richieste dal composer.json del progetto"
+        required: false
+        default: "mbstring, gd, zip, fileinfo, dom, iconv, tokenizer"
+        type: string
+      node-version:
+        description: "Versione di Node.js"
+        required: false
+        default: "22"
+        type: string
+      build-command:
+        description: "Comando di build degli asset"
+        required: false
+        default: "npm run build"
+        type: string
+      releases-keep:
+        description: "Numero di release da conservare sul server, oltre a quella attiva"
+        required: false
+        default: 5
+        type: number
+      rotation-exclude:
+        description: "Nome di una directory in RELEASES_PATH da non far entrare nella rotazione (es. una copia pre-migrazione)"
+        required: false
+        default: ""
+        type: string
+      extra-excludes:
+        description: "Percorsi aggiuntivi da escludere dall'archivio, uno per riga, ancorati con ./ (es. ./.superpowers)"
+        required: false
+        default: ""
+        type: string
+      run-migrations:
+        description: "Esegue artisan migrate --force prima di attivare la release"
+        required: false
+        default: true
+        type: boolean
+      cache-routes:
+        description: "Esegue anche route:cache. Va lasciato a false se il progetto ha rotte dichiarate con closure: la serializzazione fallirebbe"
+        required: false
+        default: false
+        type: boolean
+      health-path:
+        description: "Percorso che deve rispondere 200 nello smoke test"
+        required: false
+        default: "/up"
+        type: string
+      auto-rollback:
+        description: "Riporta current alla release precedente se uno step dopo l'attivazione fallisce"
+        required: false
+        default: true
+        type: boolean
+    secrets:
+      GH_TOKEN:
+        description: "Token con accesso ai repository privati dell'organizzazione, per composer e npm"
+        required: true
+      SSH_PRIVATE_KEY:
+        description: "Chiave privata di deploy, completa di newline finale"
+        required: true
+      SSH_KNOWN_HOSTS:
+        description: "Contenuto di known_hosts per l'host di destinazione"
+        required: true
+      SSH_HOST:
+        description: "Host SSH del server di destinazione"
+        required: true
+      SSH_USER:
+        description: "Utente SSH del server di destinazione"
+        required: true
+      SSH_PORT:
+        description: "Porta SSH del server di destinazione"
+        required: true
+    outputs:
+      release:
+        description: "Nome della release costruita da questo run"
+        value: ${{ jobs.build.outputs.release }}
+      previous:
+        description: "Path della release che era attiva prima dello swap"
+        value: ${{ jobs.deploy.outputs.previous }}
+      url:
+        description: "APP_URL letto dalla shared e usato per lo smoke test"
+        value: ${{ jobs.deploy.outputs.url }}
+
+permissions:
+  contents: read
+
+# Due deploy in parallelo sullo stesso environment si sovrascriverebbero le
+# release a vicenda. Un deploy già partito non va cancellato a metà: lascerebbe
+# il server in uno stato intermedio.
+concurrency:
+  group: deploy-${{ github.repository }}-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # environment serve per leggere vars.* e i secrets dell'environment:
+    # senza questa riga risultano stringa vuota.
+    environment: ${{ inputs.environment }}
+    # consumati dal job deploy: nome della release e dell'archivio
+    outputs:
+      release: ${{ steps.meta.outputs.release }}
+      archive: ${{ steps.meta.outputs.archive }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ inputs.php-version }}
+          extensions: ${{ inputs.php-extensions }}
+          coverage: none
+          tools: composer:v2
+
+      - name: Configure git and composer authentication for private dependencies
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::manca il secret GH_TOKEN"
+            exit 1
+          fi
+          composer config --global --auth github-oauth.github.com "$GH_TOKEN"
+          # actions/checkout installs a repository-scoped credential, in recent versions
+          # through a config file pulled in via includeIf. It wins over anything we add and
+          # cannot read other private repositories, so npm fails on a private dependency.
+          # Drop it and authenticate with GH_TOKEN, which spans the organisation and still
+          # allows pushing. npm also normalises GitHub URLs to ssh, hence the extra rules.
+          for key in $(git config --local --name-only --get-regexp '^includeif\.' || true); do
+            git config --local --unset-all "$key" || true
+          done
+          git config --local --unset-all http."https://github.com/".extraheader || true
+          TOKEN_URL="https://x-access-token:$GH_TOKEN@github.com/"
+          git config --global --add url."$TOKEN_URL".insteadOf "https://github.com/"
+          git config --global --add url."$TOKEN_URL".insteadOf "ssh://git@github.com/"
+          git config --global --add url."$TOKEN_URL".insteadOf "git@github.com:"
+
+      # Il .env serve ad artisan (package:discover, wayfinder:generate) e a Vite,
+      # che compila VITE_APP_NAME dentro il bundle. Non finisce nell'archivio:
+      # a runtime la release usa il symlink verso shared/.env.
+      - name: Build .env
+        env:
+          APP_NAME: ${{ vars.APP_NAME }}
+          REPO_NAME: ${{ github.event.repository.name }}
+        run: |
+          if [ -z "$APP_NAME" ]; then
+            APP_NAME="$REPO_NAME"
+            echo "::notice::vars.APP_NAME non impostata sull'environment, uso il nome del repository: $APP_NAME"
+          fi
+          if [ ! -f .env.example ]; then
+            echo "::error::manca .env.example, necessario per comporre il .env di build"
+            exit 1
+          fi
+          grep -vE '^(APP_NAME|APP_ENV|VITE_APP_NAME)=' .env.example > .env
+          # valori quotati: phpdotenv rifiuta un valore unquoted contenente spazi
+          printf 'APP_NAME="%s"\nAPP_ENV=production\nVITE_APP_NAME="%s"\n' "$APP_NAME" "$APP_NAME" >> .env
+
+      - name: Install PHP Dependencies
+        run: |
+          composer install --no-dev --prefer-dist --optimize-autoloader \
+            --no-interaction --no-progress
+
+      # Chiave usabile solo durante la build: a runtime vale quella in shared/.env.
+      - name: Build APP_KEY
+        run: php artisan key:generate --force
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+
+      # npm ci completo, non --omit=dev: i plugin Vite dell'organizzazione stanno
+      # in devDependencies e sono importati da vite.config.ts.
+      - name: Install Node Dependencies
+        run: npm ci
+
+      - name: Build Assets
+        run: ${{ inputs.build-command }}
+
+      - name: Verify build output
+        run: |
+          test -f public/build/manifest.json
+          test -d vendor
+          du -sh public/build vendor
+
+      - name: Release name
+        id: meta
+        run: |
+          RELEASE="$(date -u +%Y%m%d-%H%M%S)-${GITHUB_SHA:0:7}"
+          echo "release=$RELEASE" >> "$GITHUB_OUTPUT"
+          echo "archive=$RELEASE.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "Release: $RELEASE"
+
+      # L'archivio nasce in RUNNER_TEMP, fuori dal workspace, altrimenti tar
+      # includerebbe se stesso. I pattern sono ancorati con ./ perché un
+      # --exclude=tests non ancorato spoglierebbe anche i pacchetti in vendor/.
+      - name: Create release archive
+        env:
+          ARCHIVE: ${{ steps.meta.outputs.archive }}
+          EXTRA_EXCLUDES: ${{ inputs.extra-excludes }}
+        run: |
+          EXCLUDES=(
+            --exclude=./.git
+            --exclude=./.github
+            --exclude=./.ai
+            --exclude=./.claude
+            --exclude=./.vscode
+            --exclude=./.idea
+            --exclude=./node_modules
+            --exclude=./tests
+            --exclude=./docs
+            --exclude=./docker
+            --exclude=./.env
+            --exclude=./storage
+            --exclude=./public/hot
+            --exclude=./public/storage
+            --exclude=./_ide_helper.php
+            --exclude=./_ide_helper_models.php
+          )
+          while IFS= read -r pattern; do
+            pattern="${pattern%$'\r'}"
+            case "$pattern" in
+              '' | '#'*) continue ;;
+            esac
+            EXCLUDES+=( "--exclude=$pattern" )
+            echo "esclusione aggiuntiva: $pattern"
+          done <<EOF
+          $EXTRA_EXCLUDES
+          EOF
+
+          tar -czf "$RUNNER_TEMP/$ARCHIVE" "${EXCLUDES[@]}" -C "$GITHUB_WORKSPACE" .
+          ls -lh "$RUNNER_TEMP/$ARCHIVE"
+
+      # Asserzioni sul contenuto: un exclude sbagliato non deve arrivare sul
+      # server. public/hot metterebbe Vite in modalità dev servendo un host
+      # inesistente; .env e storage/ sulla release scavalcherebbero i symlink
+      # verso shared/.
+      - name: Verify archive contents
+        env:
+          ARCHIVE: ${{ steps.meta.outputs.archive }}
+        run: |
+          tar -tzf "$RUNNER_TEMP/$ARCHIVE" > "$RUNNER_TEMP/contents.txt"
+          echo "voci nell'archivio: $(wc -l < "$RUNNER_TEMP/contents.txt")"
+
+          VIETATI='^\./(\.env$|storage/|node_modules/|\.git/|tests/|public/hot$|public/storage$)'
+          if grep -qE "$VIETATI" "$RUNNER_TEMP/contents.txt"; then
+            echo "::error::l'archivio contiene voci che non devono essere spedite"
+            grep -E "$VIETATI" "$RUNNER_TEMP/contents.txt" | head -20
+            exit 1
+          fi
+
+          for f in ./artisan ./vendor/autoload.php ./public/index.php ./public/build/manifest.json ./bootstrap/app.php; do
+            if ! grep -qx "$f" "$RUNNER_TEMP/contents.txt"; then
+              echo "::error::manca $f nell'archivio"
+              exit 1
+            fi
+          done
+          echo "contenuto verificato"
+
+      - name: Upload release archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: release
+          path: ${{ runner.temp }}/${{ steps.meta.outputs.archive }}
+          retention-days: 7
+          if-no-files-found: error
+          # è già un tar.gz: ricomprimerlo in zip sarebbe tempo buttato
+          compression-level: 0
+
+  # Job separato: la chiave SSH non deve vivere nello stesso ambiente che ha
+  # eseguito npm ci e composer install.
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ inputs.environment }}
+    outputs:
+      previous: ${{ steps.activate.outputs.prev }}
+      url: ${{ steps.appurl.outputs.url }}
+    env:
+      RELEASE: ${{ needs.build.outputs.release }}
+      ARCHIVE: ${{ needs.build.outputs.archive }}
+      RELEASES_PATH: ${{ vars.RELEASES_PATH }}
+      SHARED_PATH: ${{ vars.SHARED_PATH }}
+      CURRENT_PATH: ${{ vars.CURRENT_PATH }}
+      TMP_PATH: ${{ vars.TMP_PATH }}
+      PHP_BIN: ${{ vars.PHP_BIN }}
+    steps:
+      - name: Download release archive
+        uses: actions/download-artifact@v7
+        with:
+          name: release
+          path: ${{ runner.temp }}/dl
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+        run: |
+          # un secret o una var vuota qui darebbe errori fuorvianti più avanti
+          # ("Could not resolve hostname ***", comandi remoti malformati)
+          for v in SSH_PRIVATE_KEY SSH_KNOWN_HOSTS SSH_HOST SSH_USER SSH_PORT \
+                   RELEASES_PATH SHARED_PATH CURRENT_PATH TMP_PATH PHP_BIN RELEASE; do
+            if [ -z "${!v}" ]; then
+              echo "::error::$v è vuoto: l'environment '${{ inputs.environment }}' esiste e dichiara vars e secrets?"
+              exit 1
+            fi
+          done
+
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          # printf '%s\n' e non echo: la chiave deve conservare i newline e
+          # terminare con uno, altrimenti "error in libcrypto"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+          # un alias, così gli step successivi non ripetono host, porta e flag
+          cat >> ~/.ssh/config <<EOF
+          Host target
+            HostName $SSH_HOST
+            User $SSH_USER
+            Port $SSH_PORT
+            IdentityFile ~/.ssh/id_deploy
+            IdentitiesOnly yes
+            BatchMode yes
+            ConnectTimeout 15
+          EOF
+          chmod 600 ~/.ssh/config
+
+          # Diagnostica senza esporre nulla: la chiave pubblica è derivata dalla
+          # privata (se non è ben formata, questo fallisce qui e non fra tre
+          # step), di known_hosts si stampano solo il numero di righe e i tipi
+          # di chiave, mai host o materiale crittografico.
+          if ssh-keygen -y -f ~/.ssh/id_deploy > /dev/null 2>&1; then
+            echo "chiave privata: formato valido"
+          else
+            echo "::error::la chiave privata non è leggibile (newline o CRLF nel secret SSH_PRIVATE_KEY)"
+            exit 1
+          fi
+          echo "known_hosts: $(wc -l < ~/.ssh/known_hosts) righe, tipi: $(awk '{print $2}' ~/.ssh/known_hosts | sort -u | tr '\n' ' ')"
+          echo "alias risolto in:"
+          ssh -G target | grep -iE '^(hostname|port|user|identityfile|batchmode) '
+
+          # Raggiungibilità prima di procedere: qualche ritentativo evita che un
+          # deploy salti per una caduta di venti secondi. Se cade davvero, lo
+          # step "Network diagnostics" raccoglie i dati da girare all'hosting.
+          connected=""
+          for i in 1 2 3; do
+            if ssh target 'whoami; pwd'; then
+              connected=1
+              break
+            fi
+            echo "tentativo $i non riuscito, riprovo fra 20s"
+            sleep 20
+          done
+          if [ -z "$connected" ]; then
+            echo "::error::nessuna connessione SSH dopo 3 tentativi"
+            exit 1
+          fi
+
+      # Gira solo se qualcosa è andato storto: raccoglie in un colpo i dati che
+      # servono a capire se è la rete e, se serve, a farsi sbloccare l'IP.
+      - name: Network diagnostics
+        if: failure()
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+        run: |
+          echo "--- IP pubblico di questo runner ---"
+          curl -s --max-time 10 https://api.ipify.org || echo "(non rilevato)"
+          echo
+          echo "--- raggiungibilità TCP ---"
+          # /dev/tcp di bash invece di nc: nessuna dipendenza dall'immagine del
+          # runner, quindi nessun falso negativo se nc non è installato
+          probe() {
+            if timeout 6 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null; then
+              echo "porta $2: raggiungibile"
+            else
+              echo "porta $2: NON raggiungibile (scartata o filtrata)"
+            fi
+          }
+          probe "$SSH_HOST" "$SSH_PORT"
+          # se 443 risponde e la porta SSH no, l'host è vivo ed è filtrata solo
+          # quella; se non risponde nemmeno 443, l'IP del runner è bloccato
+          probe "$SSH_HOST" 443
+          echo "--- handshake verboso ---"
+          ssh -v target true || true
+
+      - name: Transfer archive
+        run: |
+          ssh target "mkdir -p '$TMP_PATH'"
+          scp -q "$RUNNER_TEMP/dl/$ARCHIVE" "target:$TMP_PATH/$ARCHIVE"
+          ssh target "ls -lh '$TMP_PATH/$ARCHIVE'"
+
+      # rsync può non esistere sul server: estrazione con tar, path assoluto
+      # perché la shell SSH non interattiva ha un PATH più povero di quella
+      # interattiva.
+      - name: Extract new release
+        run: |
+          RELEASE_DIR="$RELEASES_PATH/$RELEASE"
+          ssh target "test ! -e '$RELEASE_DIR'" || {
+            echo "::error::$RELEASE_DIR esiste già"
+            exit 1
+          }
+          ssh target "mkdir -p '$RELEASE_DIR' && /bin/tar -xzf '$TMP_PATH/$ARCHIVE' -C '$RELEASE_DIR'"
+          ssh target "rm -f '$TMP_PATH/$ARCHIVE'"
+
+          for f in artisan public/index.php public/build/manifest.json vendor/autoload.php; do
+            ssh target "test -f '$RELEASE_DIR/$f'" || {
+              echo "::error::estrazione incompleta: manca $f"
+              exit 1
+            }
+          done
+          echo "release estratta in $RELEASE_DIR"
+          ssh target "ls -la '$RELEASE_DIR' | head -n 20"
+
+      # .env e storage/ sono esclusi dall'archivio per costruzione: finché non
+      # sono collegati a shared/, la release non è avviabile.
+      - name: Link .env and storage to shared
+        run: |
+          ssh target "sh -s '$RELEASES_PATH/$RELEASE' '$SHARED_PATH'" <<'REMOTE'
+          set -eu
+          REL="$1"; SH="$2"
+          cd "$REL"
+
+          [ -f "$SH/.env" ]    || { echo "manca $SH/.env"; exit 1; }
+          [ -d "$SH/storage" ] || { echo "manca $SH/storage"; exit 1; }
+
+          ln -sfn "$SH/.env" .env
+          rm -rf storage
+          ln -sfn "$SH/storage" storage
+          rm -rf public/storage
+          ln -sfn "$SH/storage/app/public" public/storage
+
+          # devono risolvere tutti dentro shared/
+          for p in .env storage public/storage; do
+            printf '%-16s -> %s\n' "$p" "$(readlink -f "$p")"
+          done
+          REMOTE
+
+      # Le migrazioni girano nella release nuova ma prima dell'attivazione: se
+      # falliscono, current resta dov'è e il sito continua a servire la release
+      # precedente.
+      - name: Run migrations
+        if: inputs.run-migrations
+        run: |
+          if ! ssh target "cd '$RELEASES_PATH/$RELEASE' && '$PHP_BIN' artisan migrate --force"; then
+            echo "::error::migrate --force fallito. current non è stata spostata, ma il database può essere parzialmente migrato: controlla 'artisan migrate:status' prima di rilanciare il deploy."
+            exit 1
+          fi
+
+      # I file di cache contengono path assoluti della release, quindi si
+      # generano qui e non in fase di build.
+      - name: Cache config, events and views
+        env:
+          CACHE_ROUTES: ${{ inputs.cache-routes }}
+        run: |
+          ssh target "sh -s '$RELEASES_PATH/$RELEASE' '$PHP_BIN' '$CACHE_ROUTES'" <<'REMOTE'
+          set -eu
+          REL="$1"; PHP="$2"; ROUTES="$3"
+          cd "$REL"
+          "$PHP" artisan config:cache
+          "$PHP" artisan event:cache
+          "$PHP" artisan view:cache
+          if [ "$ROUTES" = "true" ]; then
+            "$PHP" artisan route:cache
+          else
+            echo "route:cache saltata (cache-routes=false)"
+          fi
+          "$PHP" artisan about --only=environment
+          REMOTE
+
+      # Il log in shared/ è cumulativo fra release: registrando la dimensione
+      # prima dello swap, dopo si possono leggere solo le righe nuove.
+      - name: Mark log position
+        run: |
+          OFF="$(ssh target "test -f '$SHARED_PATH/storage/logs/laravel.log' && wc -c < '$SHARED_PATH/storage/logs/laravel.log' || echo 0" | tr -d ' \r')"
+          echo "LOG_OFFSET=$OFF" >> "$GITHUB_ENV"
+          echo "laravel.log a $OFF byte prima dello swap"
+
+      # Lo swap vero e proprio. Da qui in avanti il sito serve la release nuova.
+      - name: Activate release
+        id: activate
+        run: |
+          # serve al rollback e al riepilogo finale
+          PREV="$(ssh target "readlink -f '$CURRENT_PATH' 2>/dev/null" || true)"
+          echo "prev=$PREV" >> "$GITHUB_OUTPUT"
+
+          ssh target "sh -s '$RELEASES_PATH/$RELEASE' '$CURRENT_PATH'" <<'REMOTE'
+          set -eu
+          REL="$1"; CUR="$2"
+
+          [ -d "$REL" ] || { echo "release $REL inesistente"; exit 1; }
+          # -f segue il symlink: verifica che .env sia collegato e leggibile
+          [ -f "$REL/.env" ] || { echo "la release non ha .env collegato"; exit 1; }
+
+          # marcatore servito via HTTP: è l'unico modo di sapere *quale* release
+          # sta rispondendo, e quindi di aspettare la realpath cache invece di
+          # sperare che sia già scaduta
+          basename "$REL" > "$REL/public/release.txt"
+
+          # ln -sfn cancella e ricrea: per un istante current non esiste. Con un
+          # symlink temporaneo più mv -T lo scambio è una rename(2), atomica.
+          ln -sfn "$REL" "$CUR.new"
+          if ! mv -Tf "$CUR.new" "$CUR" 2>/dev/null; then
+            rm -f "$CUR.new"
+            ln -sfn "$REL" "$CUR"
+            echo "attenzione: mv -T non supportato, swap non atomico"
+          fi
+
+          NOW="$(readlink -f "$CUR")"
+          echo "current -> $NOW"
+          [ "$NOW" = "$REL" ] || { echo "lo swap non ha avuto effetto"; exit 1; }
+          REMOTE
+
+      # L'URL viene letto da shared/.env: è per definizione quello con cui
+      # l'applicazione genera link e asset, quindi se è sbagliato lo smoke test
+      # lo scopre invece di mascherarlo.
+      - name: Resolve APP_URL
+        id: appurl
+        run: |
+          RAW="$(ssh target "grep -m1 '^APP_URL=' '$SHARED_PATH/.env'")"
+          URL="${RAW#APP_URL=}"
+          URL="${URL%$'\r'}"
+          URL="${URL#\"}"; URL="${URL%\"}"
+          URL="${URL#\'}"; URL="${URL%\'}"
+          URL="${URL%/}"
+          if [ -z "$URL" ]; then
+            echo "::error::APP_URL non trovato in $SHARED_PATH/.env"
+            exit 1
+          fi
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "URL sotto test: $URL"
+
+      - name: Smoke test
+        env:
+          URL: ${{ steps.appurl.outputs.url }}
+          HEALTH_PATH: ${{ inputs.health-path }}
+        run: |
+          # Polling del marcatore: dopo lo swap la realpath cache può far servire
+          # la release precedente fino a realpath_cache_ttl (120s di default).
+          # Attesa deterministica invece di un test a volte rosso.
+          deadline=$((SECONDS + 150))
+          while :; do
+            SERVED="$(curl -fsS --max-time 10 "$URL/release.txt" 2>/dev/null | tr -d '[:space:]' || true)"
+            if [ "$SERVED" = "$RELEASE" ]; then
+              echo "release in linea: $SERVED"
+              break
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::error::dopo 150s risponde ancora '${SERVED:-nessuna risposta}' invece di $RELEASE"
+              exit 1
+            fi
+            echo "servita '${SERVED:-nessuna risposta}', riprovo fra 10s"
+            sleep 10
+          done
+
+          # L'health path fa il boot completo del framework. La home tollera i
+          # redirect verso il login, quindi si accetta qualunque esito sotto 400.
+          fallito=""
+          CODE_HEALTH="$(curl -s -o /dev/null -w '%{http_code}' -L --max-time 20 "$URL$HEALTH_PATH" || echo 000)"
+          echo "$HEALTH_PATH -> $CODE_HEALTH"
+          [ "$CODE_HEALTH" = "200" ] || fallito="$HEALTH_PATH=$CODE_HEALTH"
+          CODE_HOME="$(curl -s -o /dev/null -w '%{http_code}' -L --max-time 20 "$URL/" || echo 000)"
+          echo "/ -> $CODE_HOME"
+          [ "$CODE_HOME" -lt 400 ] 2>/dev/null || fallito="$fallito /=$CODE_HOME"
+          if [ -n "$fallito" ]; then
+            echo "::error::smoke test fallito:$fallito"
+            exit 1
+          fi
+
+      # Solo le righe scritte dopo lo swap, così un errore di settimane fa non
+      # fa fallire il deploy. ERROR è un avviso, CRITICAL e oltre bloccano.
+      - name: New errors in log
+        run: |
+          rc=0
+          ssh target "sh -s '$SHARED_PATH' '$LOG_OFFSET'" <<'REMOTE' || rc=$?
+          set -eu
+          SH="$1"; OFF="$2"
+          LOG="$SH/storage/logs/laravel.log"
+          [ -f "$LOG" ] || { echo "nessun laravel.log"; exit 0; }
+          NUOVE="$(tail -c "+$((OFF + 1))" "$LOG" || true)"
+          if [ -z "$NUOVE" ]; then
+            echo "nessuna riga nuova nel log"
+            exit 0
+          fi
+          echo "--- righe aggiunte dopo lo swap ---"
+          printf '%s\n' "$NUOVE" | tail -n 40
+          if printf '%s\n' "$NUOVE" | grep -qE 'CRITICAL|ALERT|EMERGENCY'; then
+            exit 2
+          fi
+          if printf '%s\n' "$NUOVE" | grep -qE 'ERROR'; then
+            exit 3
+          fi
+          REMOTE
+          case "$rc" in
+            0) ;;
+            2)
+              echo "::error::nel log sono comparsi CRITICAL/ALERT/EMERGENCY dopo lo swap"
+              exit 1
+              ;;
+            3) echo "::warning::nel log sono comparse righe ERROR dopo lo swap: controllale" ;;
+            *) echo "::warning::non è stato possibile leggere il log (rc=$rc)" ;;
+          esac
+
+      # Rollback automatico: current torna alla release precedente se uno step
+      # dopo l'attivazione è fallito (smoke test, log, rotazione). La condizione
+      # su activate è essenziale: se l'attivazione non è mai riuscita non c'è
+      # niente da riportare indietro, e quel caso lo gestisce la pulizia in fondo.
+      - name: Rollback to previous release
+        id: rollback
+        if: failure() && inputs.auto-rollback && steps.activate.outcome == 'success' && steps.activate.outputs.prev != ''
+        env:
+          PREV: ${{ steps.activate.outputs.prev }}
+        run: |
+          echo "::warning::deploy fallito dopo l'attivazione: riporto current a $PREV"
+          ssh target "sh -s '$PREV' '$CURRENT_PATH'" <<'REMOTE'
+          set -eu
+          PREV="$1"; CUR="$2"
+
+          [ -d "$PREV" ] || { echo "la release precedente $PREV non esiste più"; exit 1; }
+
+          ln -sfn "$PREV" "$CUR.new"
+          if ! mv -Tf "$CUR.new" "$CUR" 2>/dev/null; then
+            rm -f "$CUR.new"
+            ln -sfn "$PREV" "$CUR"
+          fi
+
+          NOW="$(readlink -f "$CUR")"
+          echo "current -> $NOW"
+          [ "$NOW" = "$PREV" ] || { echo "il rollback non ha avuto effetto"; exit 1; }
+          REMOTE
+          # La release fallita resta sul server di proposito, per poterla
+          # ispezionare: la rotazione non gira in un run fallito, quindi sparirà
+          # da sé al primo deploy riuscito successivo.
+          echo "rollback completato, la release $RELEASE resta in $RELEASES_PATH per ispezione"
+
+      # La rotazione gira solo a deploy riuscito: dopo un rollback la release
+      # precedente deve restare dov'è.
+      - name: Rotate releases
+        env:
+          RELEASES_KEEP: ${{ inputs.releases-keep }}
+          ROTATION_EXCLUDE: ${{ inputs.rotation-exclude }}
+        run: |
+          ssh target "sh -s '$RELEASES_PATH' '$CURRENT_PATH' '$RELEASES_KEEP' '$ROTATION_EXCLUDE'" <<'REMOTE'
+          set -eu
+          RELS="$1"; CUR="$2"; KEEP="$3"; SKIP="$4"
+          cd "$RELS"
+
+          ATTIVA="$(basename "$(readlink -f "$CUR")")"
+          echo "attiva: $ATTIVA · da conservare: $KEEP · esclusa dalla rotazione: ${SKIP:-nessuna}"
+
+          # if/else invece di un filtro in pipeline: con SKIP valorizzato e
+          # nessuna riga superstite, un "grep -v ... || cat" rileggerebbe uno
+          # stdin già consumato. Qui il caso non si pone.
+          if [ -n "$SKIP" ]; then
+            find . -maxdepth 1 -mindepth 1 -type d ! -name "$SKIP" -printf '%f\n'
+          else
+            find . -maxdepth 1 -mindepth 1 -type d -printf '%f\n'
+          fi \
+            | sort -r \
+            | tail -n "+$((KEEP + 1))" \
+            | while read -r vecchia; do
+                # un nome vuoto qui significherebbe rm -rf "./"
+                [ -n "$vecchia" ] || continue
+                if [ "$vecchia" = "$ATTIVA" ]; then
+                  echo "salto $vecchia: è la release attiva"
+                  continue
+                fi
+                rm -rf "./$vecchia"
+                echo "rimossa $vecchia"
+              done
+
+          echo "restano:"
+          ls -1
+          echo "spazio occupato da releases/: $(du -sh . | cut -f1)"
+          REMOTE
+
+      # always(): il riepilogo con il comando di rollback serve soprattutto
+      # quando qualcosa è andato storto.
+      - name: Summary
+        if: always()
+        env:
+          URL: ${{ steps.appurl.outputs.url }}
+          PREV: ${{ steps.activate.outputs.prev }}
+          ACTIVATE_OUTCOME: ${{ steps.activate.outcome }}
+          ROLLBACK_OUTCOME: ${{ steps.rollback.outcome }}
+        run: |
+          {
+            echo "## Deploy ${{ inputs.environment }}"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Release | \`$RELEASE\` |"
+            echo "| Precedente | \`${PREV:-n/d}\` |"
+            echo "| Attivazione | \`${ACTIVATE_OUTCOME:-non eseguita}\` |"
+            echo "| Rollback automatico | \`${ROLLBACK_OUTCOME:-non eseguito}\` |"
+            echo "| URL | ${URL:-n/d} |"
+            echo
+            echo "### Rollback manuale"
+            echo
+            echo '```sh'
+            echo "ln -sfn '${PREV:-<release-precedente>}' '$CURRENT_PATH.new'"
+            echo "mv -Tf '$CURRENT_PATH.new' '$CURRENT_PATH'"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Una release mai attivata non deve restare a occupare inode né a farsi
+      # contare dalla rotazione. La condizione sull'esito di "Activate release"
+      # è essenziale: se fallisse un passo successivo allo swap, senza di essa
+      # questo step cancellerebbe la release in produzione.
+      - name: Remove unactivated release
+        if: failure() && steps.activate.outcome != 'success'
+        run: |
+          echo "la release $RELEASE non è mai stata attivata: la rimuovo"
+          ssh target "rm -rf '$RELEASES_PATH/$RELEASE'" || true
+          ssh target "rm -f '$TMP_PATH/$ARCHIVE'" || true
