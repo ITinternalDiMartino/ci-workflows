@@ -41,6 +41,15 @@ jobs:
       node-version: "22"
       # va lasciato a false se il progetto ha rotte dichiarate con closure
       cache-routes: false
+      # 'server' misura la salute del sito dalla connessione SSH invece che dal
+      # runner: serve solo dove una protezione anti-bot dell'hosting sfida gli
+      # IP di GitHub e farebbe fallire ogni deploy con l'ambiente sano.
+      # smoke-from: server
+      # smoke-timeout: 60
+      # percorso, in questo repository, di uno script che decide i verdetti
+      # dello smoke test: serve se vuoi quelle decisioni sotto test nella tua
+      # suite invece che dentro il workflow.
+      # decisions-script: scripts/deploy-decisions.sh
     secrets:
       GH_TOKEN: ${{ secrets.GH_TOKEN }}
       SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
@@ -49,8 +58,9 @@ jobs:
       SSH_USER: ${{ secrets.SSH_USER }}
       SSH_PORT: ${{ secrets.SSH_PORT }}
 
-# La pipeline espone release, previous e url. Un job successivo può leggerli,
-# per esempio per annotare la release o notificarla altrove:
+# La pipeline espone release, previous, url e migrations-applied. Un job
+# successivo può leggerli, per esempio per annotare la release, notificarla
+# altrove, o decidere se un rollback manuale è ancora sicuro:
 #
 #   notify:
 #     needs: call-workflow
@@ -60,3 +70,4 @@ jobs:
 #           echo "release ${{ needs.call-workflow.outputs.release }} in linea"
 #           echo "precedente: ${{ needs.call-workflow.outputs.previous }}"
 #           echo "url: ${{ needs.call-workflow.outputs.url }}"
+#           echo "migrazioni applicate: ${{ needs.call-workflow.outputs.migrations-applied }}"
