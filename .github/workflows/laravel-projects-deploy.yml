@@ -8,9 +8,10 @@ name: Deploy
 #
 # Rollback: se uno step dopo l'attivazione fallisce, current torna da sé alla
 # release precedente (input auto-rollback). Riporta indietro il codice, non il
-# database: una migrazione già applicata resta applicata, quindi le migrazioni
-# distruttive vanno evitate o spezzate in due deploy. Il riepilogo del run
-# stampa comunque il comando per rifare lo swap a mano.
+# database, quindi non gira quando questo deploy ha applicato migrazioni: la
+# release precedente si troverebbe davanti a uno schema che non conosce. In
+# quel caso il run lo dice e si ferma. Il riepilogo stampa comunque il comando
+# per rifare lo swap a mano.
 #
 # Smoke test: per default misura dal runner, che attraversa anche CDN e
 # protezioni davanti al server. Dove una protezione anti-bot sfida gli IP dei
@@ -124,7 +125,11 @@ on:
         default: ""
         type: string
       auto-rollback:
-        description: "Riporta current alla release precedente se uno step dopo l'attivazione fallisce"
+        description: >-
+          Riporta current alla release precedente se uno step dopo
+          l'attivazione fallisce. Non gira se questo deploy ha applicato
+          migrazioni: rimetterebbe il codice precedente davanti a uno schema
+          che non conosce
         required: false
         default: true
         type: boolean
@@ -157,6 +162,9 @@ on:
       url:
         description: "APP_URL letto dalla shared e usato per lo smoke test"
         value: ${{ jobs.deploy.outputs.url }}
+      migrations-applied:
+        description: "'true' se questo deploy ha applicato migrazioni, cioè se il rollback del solo codice non è sicuro"
+        value: ${{ jobs.deploy.outputs.migrations-applied }}
 
 permissions:
   contents: read
@@ -357,6 +365,7 @@ jobs:
     outputs:
       previous: ${{ steps.activate.outputs.prev }}
       url: ${{ steps.appurl.outputs.url }}
+      migrations-applied: ${{ steps.migrations.outputs.applied }}
     env:
       RELEASE: ${{ needs.build.outputs.release }}
       ARCHIVE: ${{ needs.build.outputs.archive }}
@@ -549,8 +558,23 @@ jobs:
       # falliscono, current resta dov'è e il sito continua a servire la release
       # precedente.
       - name: Run migrations
+        id: migrations
         if: inputs.run-migrations
         run: |
+          # 'migrate:status --pending=1' esce con 1 quando c'è almeno una
+          # migrazione da applicare: un segnale binario, senza riconoscere
+          # stringhe nell'output. Se il comando fallisce per altro - database
+          # irraggiungibile, tabella delle migrazioni non ancora creata - si
+          # assume il caso prudente, cioè che qualcosa verrà applicato: il
+          # rollback automatico resta spento invece di girare alla cieca.
+          if ssh target "cd '$RELEASES_PATH/$RELEASE' && '$PHP_BIN' artisan migrate:status --pending=1"; then
+            APPLIED=false
+          else
+            APPLIED=true
+          fi
+          echo "applied=$APPLIED" >> "$GITHUB_OUTPUT"
+          echo "questo deploy applica migrazioni: $APPLIED"
+
           if ! ssh target "cd '$RELEASES_PATH/$RELEASE' && '$PHP_BIN' artisan migrate --force"; then
             echo "::error::migrate --force fallito. current non è stata spostata, ma il database può essere parzialmente migrato: controlla 'artisan migrate:status' prima di rilanciare il deploy."
             exit 1
@@ -799,9 +823,15 @@ jobs:
       # dopo l'attivazione è fallito (smoke test, log, rotazione). La condizione
       # su activate è essenziale: se l'attivazione non è mai riuscita non c'è
       # niente da riportare indietro, e quel caso lo gestisce la pulizia in fondo.
+      # Riporta indietro il codice, non il database: se questo deploy ha
+      # applicato migrazioni, non gira.
       - name: Rollback to previous release
         id: rollback
-        if: failure() && inputs.auto-rollback && steps.activate.outcome == 'success' && steps.activate.outputs.prev != ''
+        if: >-
+          failure() && inputs.auto-rollback
+          && steps.activate.outcome == 'success'
+          && steps.activate.outputs.prev != ''
+          && steps.migrations.outputs.applied != 'true'
         env:
           PREV: ${{ steps.activate.outputs.prev }}
         run: |
@@ -826,6 +856,16 @@ jobs:
           # ispezionare: la rotazione non gira in un run fallito, quindi sparirà
           # da sé al primo deploy riuscito successivo.
           echo "rollback completato, la release $RELEASE resta in $RELEASES_PATH per ispezione"
+
+      # Il silenzio, qui, sarebbe indistinguibile da un rollback che non era
+      # richiesto: chi legge il run deve sapere che non gira e perché.
+      - name: Rollback withheld
+        if: >-
+          failure() && inputs.auto-rollback
+          && steps.activate.outcome == 'success'
+          && steps.migrations.outputs.applied == 'true'
+        run: |
+          echo "::warning::deploy fallito dopo l'attivazione, ma questo deploy ha applicato migrazioni: il rollback automatico non gira, perché rimetterebbe il codice precedente davanti a uno schema che non conosce. Il riepilogo riporta il comando per lo swap manuale, da eseguire solo dopo aver valutato lo stato del database."
 
       # La rotazione gira solo a deploy riuscito: dopo un rollback la release
       # precedente deve restare dov'è.
@@ -877,6 +917,7 @@ jobs:
           PREV: ${{ steps.activate.outputs.prev }}
           ACTIVATE_OUTCOME: ${{ steps.activate.outcome }}
           ROLLBACK_OUTCOME: ${{ steps.rollback.outcome }}
+          MIGRATIONS_APPLIED: ${{ steps.migrations.outputs.applied }}
         run: |
           {
             echo "## Deploy ${{ inputs.environment }}"
@@ -886,6 +927,7 @@ jobs:
             echo "| Release | \`$RELEASE\` |"
             echo "| Precedente | \`${PREV:-n/d}\` |"
             echo "| Attivazione | \`${ACTIVATE_OUTCOME:-non eseguita}\` |"
+            echo "| Migrazioni applicate | \`${MIGRATIONS_APPLIED:-no}\` |"
             echo "| Rollback automatico | \`${ROLLBACK_OUTCOME:-non eseguito}\` |"
             echo "| URL | ${URL:-n/d} |"
             echo
