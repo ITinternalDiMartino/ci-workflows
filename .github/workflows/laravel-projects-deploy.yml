@@ -399,7 +399,7 @@ jobs:
           echo "verdetti dello smoke test decisi da $DECISIONS"
 
       - name: Download release archive
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: release
           path: ${{ runner.temp }}/dl
