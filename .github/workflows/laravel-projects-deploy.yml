@@ -12,6 +12,12 @@ name: Deploy
 # distruttive vanno evitate o spezzate in due deploy. Il riepilogo del run
 # stampa comunque il comando per rifare lo swap a mano.
 #
+# Smoke test: per default misura dal runner, che attraversa anche CDN e
+# protezioni davanti al server. Dove una protezione anti-bot sfida gli IP dei
+# runner, smoke-from 'server' sposta la misura sulla connessione SSH già
+# aperta. I verdetti possono essere delegati a uno script del repository
+# chiamante (input decisions-script), per tenerli sotto test nella sua suite.
+#
 # Layout atteso sul server:
 #   <RELEASES_PATH>/<release>/   una directory per release, create da qui
 #   <SHARED_PATH>/.env           configurazione persistente fra le release
@@ -88,6 +94,34 @@ on:
         description: "Percorso che deve rispondere 200 nello smoke test"
         required: false
         default: "/up"
+        type: string
+      smoke-from:
+        description: >-
+          Da dove misurare la salute del sito. 'runner' interroga il sito da
+          GitHub, e attraversa anche CDN e protezioni davanti al server.
+          'server' interroga il sito dalla connessione SSH già aperta: serve
+          dove una protezione anti-bot sfida gli IP dei runner e farebbe
+          fallire ogni deploy con l'ambiente sano
+        required: false
+        default: "runner"
+        type: string
+      smoke-timeout:
+        description: >-
+          Secondi di attesa perché il marcatore della release nuova compaia via
+          HTTP. Copre la cache dei path del web server, il cui default PHP è
+          120s: con smoke-from 'server' non c'è nessuna sfida da attendere e un
+          valore più basso è sufficiente
+        required: false
+        default: 150
+        type: number
+      decisions-script:
+        description: >-
+          Percorso, nel repository chiamante, di uno script che decide i
+          verdetti dello smoke test ('smoke-marker' e 'smoke-health'). Se
+          vuoto, il confronto lo fa questo workflow. Serve ai progetti che
+          vogliono quelle decisioni sotto test nella propria suite
+        required: false
+        default: ""
         type: string
       auto-rollback:
         description: "Riporta current alla release precedente se uno step dopo l'attivazione fallisce"
@@ -332,6 +366,29 @@ jobs:
       TMP_PATH: ${{ vars.TMP_PATH }}
       PHP_BIN: ${{ vars.PHP_BIN }}
     steps:
+      # Al job non serve il codice dell'applicazione, solo lo script di
+      # decisione che lo smoke test invoca. In un workflow riusabile
+      # actions/checkout senza 'repository' prende il repository chiamante,
+      # quindi lo script arriva da lì; sparse-checkout porta quel solo file.
+      - name: Checkout decisions script
+        if: inputs.decisions-script != ''
+        uses: actions/checkout@v7
+        with:
+          sparse-checkout: ${{ inputs.decisions-script }}
+          sparse-checkout-cone-mode: false
+
+      - name: Verify decisions script
+        if: inputs.decisions-script != ''
+        env:
+          DECISIONS: ${{ inputs.decisions-script }}
+        run: |
+          if [ ! -f "$DECISIONS" ]; then
+            echo "::error::decisions-script punta a '$DECISIONS', che non esiste nel repository chiamante"
+            exit 1
+          fi
+          chmod +x "$DECISIONS"
+          echo "verdetti dello smoke test decisi da $DECISIONS"
+
       - name: Download release archive
         uses: actions/download-artifact@v7
         with:
@@ -582,37 +639,122 @@ jobs:
           echo "url=$URL" >> "$GITHUB_OUTPUT"
           echo "URL sotto test: $URL"
 
+      # Con smoke-from 'server' le richieste partono dalla connessione SSH già
+      # aperta. Il percorso attraversa web server e PHP - cioè lo stack che il
+      # deploy ha cambiato - ed esclude il solo strato che il deploy non tocca,
+      # che è anche quello che sfida gli IP dei runner. Nessun -L in quella
+      # modalità: un redirect fuori host riporterebbe la misura là da dove si
+      # è voluta spostare.
       - name: Smoke test
+        id: smoke
         env:
           URL: ${{ steps.appurl.outputs.url }}
           HEALTH_PATH: ${{ inputs.health-path }}
+          SMOKE_FROM: ${{ inputs.smoke-from }}
+          SMOKE_TIMEOUT: ${{ inputs.smoke-timeout }}
+          DECISIONS: ${{ inputs.decisions-script }}
         run: |
-          # Polling del marcatore: dopo lo swap la realpath cache può far servire
-          # la release precedente fino a realpath_cache_ttl (120s di default).
-          # Attesa deterministica invece di un test a volte rosso.
-          deadline=$((SECONDS + 150))
-          while :; do
-            SERVED="$(curl -fsS --max-time 10 "$URL/release.txt" 2>/dev/null | tr -d '[:space:]' || true)"
-            if [ "$SERVED" = "$RELEASE" ]; then
-              echo "release in linea: $SERVED"
-              break
+          case "$SMOKE_FROM" in
+            runner | server) ;;
+            *)
+              echo "::error::smoke-from vale '$SMOKE_FROM': gli unici valori ammessi sono 'runner' e 'server'"
+              exit 1
+              ;;
+          esac
+          echo "misura da: $SMOKE_FROM · URL sotto test: $URL"
+
+          # Senza un client HTTP sul server la modalità 'server' produrrebbe
+          # risposte vuote per tutto il periodo di attesa, e poi accuserebbe il
+          # deploy di non essere andato in linea.
+          if [ "$SMOKE_FROM" = "server" ] && ! ssh target "command -v curl" > /dev/null 2>&1; then
+            echo "::error::sul server non c'è curl: con smoke-from 'server' la misura ha bisogno di un client HTTP sulla destinazione"
+            exit 1
+          fi
+
+          # stderr non va silenziato: quando curl non si connette, la sua riga
+          # di errore è l'unica diagnosi disponibile.
+          corpo() {
+            if [ "$SMOKE_FROM" = "server" ]; then
+              ssh target "curl -sS --max-time 10 '$1'" || true
+            else
+              curl -sS --max-time 10 "$1" || true
             fi
+          }
+
+          # curl stampa già 000 quando la richiesta non va a buon fine: il
+          # default copre solo il caso in cui cada ssh, che non stampa nulla.
+          codice() {
+            if [ "$SMOKE_FROM" = "server" ]; then
+              ssh target "curl -sS -o /dev/null -w '%{http_code}' --max-time 20 '$1'" || true
+            else
+              curl -sS -o /dev/null -w '%{http_code}' -L --max-time 20 "$1" || true
+            fi
+          }
+
+          verdetto() {
+            if [ -n "$DECISIONS" ]; then
+              printf '%s' "$1" | "$DECISIONS" smoke-marker "$RELEASE" || true
+              return
+            fi
+            servita="$(printf '%s' "$1" | tr -d '[:space:]')"
+            if [ -z "$servita" ]; then
+              echo "no-response"
+            elif [ "$servita" = "$RELEASE" ]; then
+              echo "match"
+            else
+              echo "mismatch"
+            fi
+          }
+
+          # Polling del marcatore: dopo lo swap la cache dei path del web server
+          # può far servire la release precedente ancora per un po'. Attesa
+          # deterministica invece di un test a volte rosso.
+          deadline=$((SECONDS + SMOKE_TIMEOUT))
+          while :; do
+            VERDETTO="$(verdetto "$(corpo "$URL/release.txt")")"
+            case "$VERDETTO" in
+              match)
+                echo "release in linea: $RELEASE"
+                break
+                ;;
+              # Verdetti definitivi: il sito non sta servendo il marcatore e non
+              # inizierà da sé, quindi ritentare è tempo buttato. Il messaggio si
+              # spiega da sé invece di lasciare nel log pagine di HTML minificato.
+              challenged)
+                echo "::error::una protezione anti-bot risponde al posto del marcatore. Da 'runner' è attesa su alcuni hosting: prova smoke-from 'server'. Da 'server' significa che la misura via HTTP non è utilizzabile su questa destinazione"
+                exit 1
+                ;;
+              html-page)
+                echo "::error::risponde una pagina HTML invece del marcatore: release.txt non è servito su questo vhost"
+                exit 1
+                ;;
+            esac
+
             if [ "$SECONDS" -ge "$deadline" ]; then
-              echo "::error::dopo 150s risponde ancora '${SERVED:-nessuna risposta}' invece di $RELEASE"
+              echo "::error::dopo ${SMOKE_TIMEOUT}s il marcatore non è quello della release $RELEASE (verdetto: $VERDETTO)"
               exit 1
             fi
-            echo "servita '${SERVED:-nessuna risposta}', riprovo fra 10s"
+            echo "marcatore: $VERDETTO, riprovo fra 10s"
             sleep 10
           done
 
-          # L'health path fa il boot completo del framework. La home tollera i
-          # redirect verso il login, quindi si accetta qualunque esito sotto 400.
+          # L'health path fa il boot completo del framework ma non attraversa
+          # routing, middleware e manifest di Vite: per quello serve la home,
+          # che redirige al login o risponde direttamente.
+          CODE_HEALTH="$(codice "$URL$HEALTH_PATH")"; CODE_HEALTH="${CODE_HEALTH:-000}"
+          CODE_HOME="$(codice "$URL/")"; CODE_HOME="${CODE_HOME:-000}"
+          echo "$HEALTH_PATH → $CODE_HEALTH · / → $CODE_HOME"
+
+          if [ -n "$DECISIONS" ]; then
+            if ! FALLITI="$("$DECISIONS" smoke-health "$CODE_HEALTH" "$CODE_HOME")"; then
+              echo "::error::smoke test fallito: $FALLITI"
+              exit 1
+            fi
+            exit 0
+          fi
+
           fallito=""
-          CODE_HEALTH="$(curl -s -o /dev/null -w '%{http_code}' -L --max-time 20 "$URL$HEALTH_PATH" || echo 000)"
-          echo "$HEALTH_PATH -> $CODE_HEALTH"
           [ "$CODE_HEALTH" = "200" ] || fallito="$HEALTH_PATH=$CODE_HEALTH"
-          CODE_HOME="$(curl -s -o /dev/null -w '%{http_code}' -L --max-time 20 "$URL/" || echo 000)"
-          echo "/ -> $CODE_HOME"
           [ "$CODE_HOME" -lt 400 ] 2>/dev/null || fallito="$fallito /=$CODE_HOME"
           if [ -n "$fallito" ]; then
             echo "::error::smoke test fallito:$fallito"
