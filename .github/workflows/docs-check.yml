@@ -15,16 +15,14 @@ jobs:
           script: |
             const body = context.payload.pull_request.body || "";
 
-            const checkedNoChanges = body.includes("- [x] Nessuna modifica funzionale");
-            const checkedDocs = body.includes("- [x] Aggiornata documentazione");
+            const checkedNoChanges = body.includes("- [x] No functional change");
+            const checkedDocs = body.includes("- [x] Documentation updated");
 
-            // Regola 1: almeno una opzione selezionata
             if (!checkedNoChanges && !checkedDocs) {
-              core.setFailed("Devi selezionare almeno una opzione nel blocco 'Impatto sulla documentazione'.");
+              core.setFailed("Tick one option in the 'Documentation impact' block of the PR template.");
               return;
             }
 
-            // Se è selezionata "Aggiornata documentazione", controlla i file modificati
             if (checkedDocs) {
               const { data: files } = await github.rest.pulls.listFiles({
                 owner: context.repo.owner,
@@ -38,7 +36,7 @@ jobs:
 
               if (!docsChanged) {
                 core.setFailed(
-                  "Hai selezionato 'Aggiornata documentazione' ma non ci sono modifiche dentro la cartella docs/."
+                  "'Documentation updated' is ticked but this PR changes no file under docs/."
                 );
               }
             }
