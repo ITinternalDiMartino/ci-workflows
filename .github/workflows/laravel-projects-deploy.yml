@@ -26,6 +26,9 @@ name: Deploy
 #   <CURRENT_PATH>               symlink alla release attiva (document root)
 #   <TMP_PATH>/                  area di transito per l'archivio
 #
+# Il layout lo prepara scripts/setup-releases.sh, anche migrando un sito già in
+# linea su un progetto piatto: vedi scripts/README.md.
+#
 # Nota su SC2029: i comandi remoti interpolano variabili con le virgolette
 # doppie, quindi l'espansione avviene sul runner e non sul server. È voluto:
 # i path arrivano dalle vars dell'environment, che il server non conosce. I

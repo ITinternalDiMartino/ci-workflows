@@ -11,8 +11,10 @@ name: Deploy
 #            CURRENT_PATH    percorso del symlink alla release attiva,
 #                            cioè il document root del vhost
 #            TMP_PATH        directory di transito per l'archivio
-#            PHP_BIN         percorso assoluto del binario PHP sul server
-#                            (es. /usr/local/bin/ea-php84)
+#            PHP_BIN         percorso assoluto del binario PHP del dominio
+#                            (es. /opt/cpanel/ea-php84/root/usr/bin/php), non
+#                            quello di `which php`, che su cPanel è il PHP di
+#                            sistema
 #            APP_NAME        facoltativa: nome applicazione compilato dentro il
 #                            bundle Vite. Se assente si usa il nome del repository
 #
@@ -25,7 +27,11 @@ name: Deploy
 #            SSH_PORT        porta SSH del server
 #
 # Sul server, prima del primo deploy, devono già esistere SHARED_PATH/.env e
-# SHARED_PATH/storage/: la pipeline li collega, non li crea.
+# SHARED_PATH/storage/: la pipeline li collega, non li crea. Il layout, su un
+# dominio nuovo o migrando un sito già in linea, lo prepara
+# scripts/setup-releases.sh di questo repository: fasi, trappole e ordine del
+# cutover sono in scripts/README.md. La sua fase "shared" stampa le vars qui
+# sopra già compilate.
 
 on:
   push:
@@ -41,6 +47,10 @@ jobs:
       node-version: "22"
       # va lasciato a false se il progetto ha rotte dichiarate con closure
       cache-routes: false
+      # obbligatoria su un progetto migrato con setup-releases.sh: 000-legacy è
+      # la copia pre-migrazione e, senza questa riga, la prima release che la
+      # rotazione cancella (vedi scripts/README.md)
+      # rotation-exclude: 000-legacy
       # 'server' misura la salute del sito dalla connessione SSH invece che dal
       # runner: serve solo dove una protezione anti-bot dell'hosting sfida gli
       # IP di GitHub e farebbe fallire ogni deploy con l'ambiente sano.
