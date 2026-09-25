@@ -16,23 +16,48 @@ posizione.
 
 ## Come si esegue
 
-Dal proprio computer, senza lasciare niente sul server:
+Dal proprio computer, dalla cartella di questo repository, senza copiare niente
+sul server. Un esempio completo:
 
 ```sh
-ssh utente@host 'sh -s' -- <fase> <--new|--from-existing> <BASE> [opzioni] < scripts/setup-releases.sh
+ssh -p 2222 dominio@server.hosting.it 'sh -s' -- recon --from-existing /home/dominio/dominio.it < scripts/setup-releases.sh
 ```
 
+Pezzo per pezzo:
+
+| pezzo | cosa scrivere | nell'esempio |
+|---|---|---|
+| `ssh -p 2222` | la porta SSH del server; `-p` si omette se è la 22 | `2222` |
+| `dominio@server.hosting.it` | utente cPanel del dominio e host SSH: gli stessi che andranno nei secret `SSH_USER` e `SSH_HOST` | |
+| `'sh -s' --` | sempre uguale, fra apici: dice al server di eseguire lo script che arriva da stdin, passandogli gli argomenti che seguono | |
+| fase | una fra `recon`, `bridge`, `shared`, `legacy`, `cleanup` (vedi sotto quale e quando) | `recon` |
+| modalità | `--from-existing` se sul dominio c'è già il sito in linea da migrare, `--new` se il dominio è appena creato e vuoto | `--from-existing` |
+| BASE | la cartella del dominio, percorso assoluto: quella che **contiene** `artisan` nel sito piatto, o quella in cui cPanel ha creato `current/` su un dominio nuovo. Non `public/`, non `current/` | `/home/dominio/dominio.it` |
+| opzioni | facoltative, vedi la tabella qui sotto; vanno dopo BASE | nessuna |
+| `< scripts/setup-releases.sh` | sempre uguale: è lo script che viene mandato al server. Il percorso è relativo alla cartella da cui lanci il comando | |
+
+Per trovare BASE: dal pannello cPanel, **Domini**, la colonna del document root.
+Se il document root è `/home/dominio/dominio.it/public`, BASE è
+`/home/dominio/dominio.it`. Se si è in dubbio, `recon` non modifica niente:
+lanciarlo su un percorso sbagliato mostra solo che dentro non c'è il sito.
+
+Fra una fase e l'altra cambia solo la parola della fase; modalità e BASE restano
+le stesse per tutta la migrazione.
+
 Non è una GitHub Action perché gira **prima** che l'Environment e i secret SSH
-esistano. Siccome `sh -s` legge lo script da stdin, nessuna fase chiede niente:
+esistano. Siccome lo script arriva al server da stdin, nessuna fase chiede niente:
 ognuna è un comando a sé.
 
-| opzione | default | a cosa serve |
+| opzione | quando serve | default |
 |---|---|---|
-| `--url URL` | `APP_URL` del `.env` | URL interrogato dalle sonde |
-| `--php-bin PATH` | il PHP del dominio | `PHP_BIN` da verificare in `recon` |
-| `--health-path P` | `/` | percorso che deve rispondere 2xx/3xx in `legacy` e `cleanup` |
-| `--timeout N` | `150` | secondi di attesa della sonda di release |
-| `--no-color` | | output senza sequenze ANSI |
+| `--url https://dominio.it` | se `APP_URL` nel `.env` non è l'indirizzo pubblico del sito (es. `http://localhost`), oppure in `--new` prima che il `.env` esista | `APP_URL` del `.env` |
+| `--php-bin /opt/cpanel/ea-php84/root/usr/bin/php` | in `recon`, per verificare un `PHP_BIN` preciso, o quando `recon` dice che non riesce a determinarlo | il PHP del dominio |
+| `--health-path /login` | se la home risponde 4xx anche con il sito sano (es. protetta da password): va indicata una pagina che risponde 2xx o 3xx | `/` |
+| `--timeout 300` | se la sonda di `legacy` o `cleanup` scade prima che PHP veda la release | `150` secondi |
+| `--no-color` | se l'output va salvato in un file o incollato altrove | colori attivi |
+
+Un'opzione con valore si scrive con uno spazio in mezzo:
+`... cleanup --from-existing /home/dominio/dominio.it --url https://dominio.it --timeout 300 < scripts/setup-releases.sh`.
 
 ## Le due modalità
 
@@ -48,19 +73,20 @@ ignorarla, quindi in `--new` quelle fasi non esistono.
 
 ## Migrazione di un sito in linea
 
-```sh
-S='ssh utente@host sh -s --'
-B=/home/utente/dominio.it
+Con i valori dell'esempio sopra. Ogni riga si lancia quando la precedente è finita
+bene, e le righe con `#` sono passi da fare a mano:
 
-$S recon   --from-existing $B < scripts/setup-releases.sh
-$S bridge  --from-existing $B < scripts/setup-releases.sh
-#  pannello cPanel: document root del dominio -> $B/current/public
-$S shared  --from-existing $B < scripts/setup-releases.sh
-$S legacy  --from-existing $B < scripts/setup-releases.sh
-$S cleanup --from-existing $B < scripts/setup-releases.sh
-#  pannello cPanel: cron su $B/current/artisan
-$S recon   --from-existing $B < scripts/setup-releases.sh   # fino a "pronto: sì"
-#  primo deploy, sullo stesso commit già in produzione
+```sh
+ssh -p 2222 dominio@server.hosting.it 'sh -s' -- recon   --from-existing /home/dominio/dominio.it < scripts/setup-releases.sh
+ssh -p 2222 dominio@server.hosting.it 'sh -s' -- bridge  --from-existing /home/dominio/dominio.it < scripts/setup-releases.sh
+# pannello cPanel: document root del dominio -> /home/dominio/dominio.it/current/public
+ssh -p 2222 dominio@server.hosting.it 'sh -s' -- shared  --from-existing /home/dominio/dominio.it < scripts/setup-releases.sh
+ssh -p 2222 dominio@server.hosting.it 'sh -s' -- legacy  --from-existing /home/dominio/dominio.it < scripts/setup-releases.sh
+ssh -p 2222 dominio@server.hosting.it 'sh -s' -- cleanup --from-existing /home/dominio/dominio.it < scripts/setup-releases.sh
+# pannello cPanel: cron su /home/dominio/dominio.it/current/artisan
+ssh -p 2222 dominio@server.hosting.it 'sh -s' -- recon   --from-existing /home/dominio/dominio.it < scripts/setup-releases.sh
+# ripetere recon finché non dice "pronto per il primo deploy: sì",
+# poi il primo deploy, sullo stesso commit già in produzione
 ```
 
 Il perno è che `current` può puntare a `$BASE` stesso: allora
@@ -86,10 +112,11 @@ che passa per un symlink (verificato nella migrazione a mano del 24 settembre
 ## Dominio nuovo
 
 ```sh
-$S recon  --new $B < scripts/setup-releases.sh
-$S shared --new $B < scripts/setup-releases.sh
-#  compilare a mano $B/shared/.env, con APP_KEY, chmod 600
-$S recon  --new $B < scripts/setup-releases.sh   # fino a "pronto: sì"
+ssh -p 2222 nuovo@server.hosting.it 'sh -s' -- recon  --new /home/nuovo/nuovo.it < scripts/setup-releases.sh
+ssh -p 2222 nuovo@server.hosting.it 'sh -s' -- shared --new /home/nuovo/nuovo.it < scripts/setup-releases.sh
+# compilare a mano /home/nuovo/nuovo.it/shared/.env, con APP_KEY, e chmod 600
+ssh -p 2222 nuovo@server.hosting.it 'sh -s' -- recon  --new /home/nuovo/nuovo.it < scripts/setup-releases.sh
+# ripetere recon finché non dice "pronto per il primo deploy: sì"
 ```
 
 Il document root si cambia quando si vuole: fino al primo deploy il dominio è rotto
