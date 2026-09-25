@@ -85,7 +85,8 @@ ssh -p 2222 dominio@server.hosting.it 'sh -s' -- legacy  --from-existing /home/d
 ssh -p 2222 dominio@server.hosting.it 'sh -s' -- cleanup --from-existing /home/dominio/dominio.it < scripts/setup-releases.sh
 # pannello cPanel: cron su /home/dominio/dominio.it/current/artisan
 ssh -p 2222 dominio@server.hosting.it 'sh -s' -- recon   --from-existing /home/dominio/dominio.it < scripts/setup-releases.sh
-# ripetere recon finché non dice "pronto per il primo deploy: sì",
+# ripetere recon finché non dice "pronto per il primo deploy: sì"
+# Environment GitHub: scripts/setup-environment.sh (vedi sotto)
 # poi il primo deploy, sullo stesso commit già in produzione
 ```
 
@@ -117,10 +118,63 @@ ssh -p 2222 nuovo@server.hosting.it 'sh -s' -- shared --new /home/nuovo/nuovo.it
 # compilare a mano /home/nuovo/nuovo.it/shared/.env, con APP_KEY, e chmod 600
 ssh -p 2222 nuovo@server.hosting.it 'sh -s' -- recon  --new /home/nuovo/nuovo.it < scripts/setup-releases.sh
 # ripetere recon finché non dice "pronto per il primo deploy: sì"
+# Environment GitHub: scripts/setup-environment.sh (vedi sotto)
 ```
 
 Il document root si cambia quando si vuole: fino al primo deploy il dominio è rotto
 comunque.
+
+## L'Environment GitHub: setup-environment.sh
+
+`scripts/setup-environment.sh` crea l'Environment del progetto e ci scrive le vars e
+i secret che chiede il deploy. Gira sul proprio computer, dalla cartella di questo
+repository, con la CLI `gh` autenticata da admin del repository del progetto e bash
+4.4 o più recente (su macOS: `brew install bash`). Si lancia quando `recon` dice
+pronto, prima del primo deploy.
+
+```sh
+scripts/setup-environment.sh --repo ITinternalDiMartino/progetto --env production \
+  --ssh dominio@server.hosting.it --port 2222 --base /home/dominio/dominio.it \
+  --key ~/.ssh/deploy_progetto
+```
+
+| argomento | cosa ci va |
+|---|---|
+| `--repo` | il repository del **progetto**, non `ci-workflows`, nella forma `ORGANIZZAZIONE/NOME` |
+| `--env` | il nome dell'Environment, lo stesso di `environment:` nel `deploy.yml` del progetto (es. `production`, `qat`) |
+| `--ssh`, `--port` | come per `setup-releases.sh`. Anche un alias di `~/.ssh/config` va bene: nei secret finiscono host, porta e utente risolti |
+| `--base` | la stessa BASE di `setup-releases.sh` |
+| `--key` | il file della **chiave privata di deploy**, già esistente e già autorizzata sul server, senza passphrase |
+| `--php-bin` | facoltativo: `PHP_BIN` al posto di quello che dice il server |
+| `--app-name` | facoltativo: `APP_NAME` al posto di quello di `shared/.env` |
+| `--dry-run` | mostra cosa farebbe, accanto ai valori già presenti, e si ferma |
+| `--yes` | non chiede conferma |
+
+Da dove vengono i valori:
+
+- **vars**: le calcola il server con la fase `vars` di `setup-releases.sh`, che
+  stampa `NOME=valore` e non modifica niente. `PHP_BIN` è quindi il PHP del
+  dominio, come in `recon`;
+- **`SSH_HOST`, `SSH_USER`, `SSH_PORT`**: da `--ssh` e `--port`, risolti da `ssh -G`;
+- **`SSH_KNOWN_HOSTS`**: le righe dell'host prese dal proprio `known_hosts`, cioè la
+  chiave che si è già accettata collegandosi. Se l'host non c'è, lo script si ferma:
+  ci si collega una volta a mano, si confronta l'impronta con quella del pannello e
+  si rilancia. Non usa `ssh-keyscan`, che si fida di chiunque risponda in quel
+  momento;
+- **`SSH_PRIVATE_KEY`**: il file di `--key`, con il newline finale aggiunto se manca
+  (senza, il runner fallisce con `error in libcrypto`). La chiave **non** viene
+  generata né autorizzata dallo script.
+
+Prima di scrivere si collega al server con la chiave di deploy **alle stesse
+condizioni del runner**: nessuna `~/.ssh/config`, solo quella chiave, solo quelle
+righe di `known_hosts`, `BatchMode`. Se il server rifiuta la chiave, stampa la
+chiave pubblica da autorizzare in cPanel (SSH Access → Manage SSH Keys → Import Key,
+poi Authorize) e non scrive niente.
+
+Il `GH_TOKEN` non lo tocca, perché di solito è un secret dell'organizzazione:
+controlla solo che il repository lo veda, e se non lo trova lo dice. Lo script si
+può rilanciare: le vars uguali restano come sono, quelle diverse vengono aggiornate
+e i secret sovrascritti.
 
 ## Le fasi
 
@@ -140,6 +194,9 @@ sì.
 - i cron dell'utente che nominano `$BASE`, con accanto il path corretto;
 - il PHP del dominio accanto a `PHP_BIN` (vedi sotto) e il document root, se
   `uapi` lo sa dire.
+
+**`vars`**, senza modalità, stampa le vars dell'Environment come `NOME=valore`, e
+nient'altro. Non modifica niente: la usa `setup-environment.sh`.
 
 **`bridge`** crea `current → $BASE` e si ferma. Rifiuta di lavorare se `current`
 esiste già e non punta a `$BASE`.
