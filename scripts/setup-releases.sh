@@ -289,11 +289,25 @@ sonda_release() {
   SONDE="$SONDE $f"
   fine=$(($(date +%s) + TIMEOUT))
   while :; do
-    visto="$(corpo "$URL/__probe-release.php" | tr -d '[:space:]')"
+    risposta="$(curl -sS --max-time 10 -w '\n%{http_code}' "$URL/__probe-release.php" 2> /dev/null || true)"
+    cod="$(printf '%s\n' "$risposta" | tail -n1)"
+    visto="$(printf '%s\n' "$risposta" | sed '$d' | tr -d '[:space:]')"
     if [ "$visto" = "$tok" ]; then
       say "  sonda: PHP risolve current in $1"
       break
     fi
+    # Mentre la cache risolve current nel posto vecchio il file non c'è, quindi
+    # l'attesa normale è un 404. Qualunque altra risposta senza token (403 di
+    # permessi, 5xx, redirect, nessuna connessione) non si sistema aspettando:
+    # si ripristina subito invece di lasciare il sito in errore fino al timeout.
+    case "$cod" in
+      404 | 200) ;;
+      *)
+        say "  sonda: HTTP ${cod:-000} da $URL/__probe-release.php: non è la cache, non aspetto (risposta: $(printf '%.80s' "${visto:-vuota}"))"
+        rimuovi_sonde
+        return 1
+        ;;
+    esac
     if [ "$(date +%s)" -ge "$fine" ]; then
       say "  sonda: dopo ${TIMEOUT}s PHP non serve ancora da $1 (risposta: $(printf '%.80s' "${visto:-vuota}"))"
       rimuovi_sonde
@@ -812,7 +826,17 @@ legacy() {
     riscrivi_config_cache
   fi
 
-  say "3. collegamenti verso shared/, con target relativo"
+  say "3. permessi per il web server e collegamenti verso shared/"
+  # Con tar -p la radice della copia ha preso il modo di BASE, che su cPanel è
+  # spesso 750 con gruppo nobody: il modo si copia, il gruppo no, perché lo può
+  # assegnare solo root. Apache resterebbe fuori, con "Server unable to read
+  # htaccess file". Le release del deploy nascono 755/644: qui si dà lo stesso
+  # accesso, solo lungo il percorso che serve al web server.
+  chmod o+x "$LEGACY"
+  find "$LEGACY/public" -type d -exec chmod o+rx {} + -o -type f -exec chmod o+r {} +
+  for p in "$BASE" "$LEGACY" "$LEGACY/public"; do
+    printf '   %-40s %s\n' "${p#"$BASE"}/" "$(stat -c '%a %U:%G' "$p")"
+  done
   # Non dall'archivio: BASE/.env -> shared/.env è relativo, e dentro la
   # release punterebbe a releases/000-legacy/shared/.env.
   ln -srfT "$SH/storage" "$LEGACY/storage"

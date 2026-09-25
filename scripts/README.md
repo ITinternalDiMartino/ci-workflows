@@ -233,7 +233,12 @@ niente:
    era un symlink, `public/storage`. I path assoluti di `bootstrap/cache/config.php`
    vengono riscritti verso la copia: puntavano a `$BASE/storage` e a
    `$BASE/resources`, che dopo `cleanup` non esistono più;
-3. ricrea i collegamenti con target relativo (`ln -srfT`) verso `shared/`: i
+3. dà ad Apache l'accesso che ha in una release del deploy (`o+x` sulla radice
+   della copia, `o+rX` su `public/`). `tar -p` ha copiato alla radice il modo di
+   `$BASE`, che su cPanel è spesso `750` con gruppo `nobody`: il modo si copia, il
+   gruppo no, perché lo assegna solo root. Senza questo passo Apache risponde
+   `403 Server unable to read htaccess file`. Poi ricrea i collegamenti con target
+   relativo (`ln -srfT`) verso `shared/`: i
    symlink dell'archivio non servono, perché `$BASE/.env → shared/.env` dentro la
    release punterebbe a `releases/000-legacy/shared/.env`;
 4. sposta `current` su `releases/000-legacy` con lo stesso `ln -sfn` + `mv -Tf` del
@@ -317,7 +322,10 @@ Le sonde vengono cancellate subito dopo, e comunque all'uscita.
 `releases/000-legacy/public`. Dopo lo swap la realpath cache di PHP (120s di
 default) può ancora risolvere `current` in `$BASE`, dove i file vecchi sono intatti:
 senza aspettare quel token il sito risponderebbe verde anche con la copia rotta.
-Tornato il token, `--health-path` deve rispondere 2xx o 3xx.
+L'attesa normale è un 404, il file che nel posto vecchio non c'è: qualunque altra
+risposta senza token (403, 5xx, redirect, nessuna connessione) non si sistema
+aspettando, e `legacy` ripristina subito invece di lasciare il sito in errore fino
+al timeout. Tornato il token, `--health-path` deve rispondere 2xx o 3xx.
 
 ## PHP_BIN: mai `which php`
 
