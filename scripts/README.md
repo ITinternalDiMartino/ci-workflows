@@ -132,6 +132,21 @@ repository, con la CLI `gh` autenticata da admin del repository del progetto e b
 4.4 o più recente (su macOS: `brew install bash`). Si lancia quando `recon` dice
 pronto, prima del primo deploy.
 
+Essere admin del repository non basta se `gh` è autenticato con un fine-grained
+token (`github_pat_...`): vede solo quello che gli è stato concesso, e le chiamate
+su secret e variabili rispondono `Resource not accessible by personal access token
+(HTTP 403)`. La strada più semplice è rifare il login con il browser, che dà un
+token con scope `repo`:
+
+```sh
+gh auth login --web
+```
+
+In alternativa si aggiungono al token, per il repository del progetto,
+Administration e Environments in lettura e scrittura, Secrets e Variables in
+lettura. Lo script controlla i permessi prima di fare qualunque cosa, e se mancano
+lo dice.
+
 ```sh
 scripts/setup-environment.sh --repo ITinternalDiMartino/progetto --env production \
   --ssh dominio@server.hosting.it --port 2222 --base /home/dominio/dominio.it \

@@ -80,7 +80,35 @@ SETUP_RELEASES="$QUI/setup-releases.sh"
 for t in gh ssh ssh-keygen; do
   command -v "$t" > /dev/null 2>&1 || muori "manca $t"
 done
-gh auth status > /dev/null 2>&1 || muori "gh non è autenticato: gh auth login"
+gh auth status > /dev/null 2>&1 || muori "gh non è autenticato: gh auth login --web"
+
+# I permessi si verificano prima di tutto il resto. Essere admin del repository
+# non basta: un fine-grained token (github_pat_...) vede solo quello che gli è
+# stato concesso, e un 403 a metà scrittura lascerebbe l'Environment incompleto.
+PERMESSI_TOKEN="il token con cui è autenticato gh non ha i permessi necessari su $REPO.
+  Se è un fine-grained token (github_pat_...), due strade:
+  - rifare il login con il browser, che dà un token con scope repo:
+      gh auth login --web
+  - oppure, su github.com > Settings > Developer settings > Fine-grained tokens,
+    aggiungere $REPO ai repository del token con questi permessi:
+      Administration: Read and write   (crea l'Environment)
+      Environments:   Read and write   (vars e secret dell'Environment)
+      Secrets:        Read-only        (cerca GH_TOKEN)
+      Variables:      Read-only
+    Se il resource owner è l'organizzazione, un owner può doverlo approvare."
+gh_errore() { muori "$1
+  risposta: $(printf '%s' "$2" | tail -n1)"; }
+
+if ! out="$(gh api "repos/$REPO" --jq '.permissions.admin' 2>&1)"; then
+  case "$out" in
+    *"HTTP 404"*) muori "$REPO non esiste, o il token di gh non lo vede (un fine-grained token vede solo i repository che gli sono stati assegnati)" ;;
+    *) gh_errore "non riesco a leggere $REPO" "$out" ;;
+  esac
+fi
+[ "$out" = true ] || muori "non sei admin di $REPO: creare un Environment lo richiede"
+for ep in actions/secrets actions/variables; do
+  out="$(gh api "repos/$REPO/$ep" --silent 2>&1)" || gh_errore "$PERMESSI_TOKEN" "$out"
+done
 
 LAVORO="$(mktemp -d)"
 trap 'rm -rf "$LAVORO"' EXIT
@@ -169,8 +197,14 @@ APP_NAME_V="${APP_OPT:-$(var APP_NAME)}"
 # ---------------------------------------------------------------------------
 # stato attuale su GitHub
 
+# 404 vuol dire che non esiste; qualunque altro errore non va scambiato per
+# quello, altrimenti il piano direbbe "da creare" per un problema di permessi
 ENV_ESISTE=''
-gh api "repos/$REPO/environments/$ENV_NAME" --silent 2> /dev/null && ENV_ESISTE=1
+if out="$(gh api "repos/$REPO/environments/$ENV_NAME" --silent 2>&1)"; then
+  ENV_ESISTE=1
+else
+  case "$out" in *"HTTP 404"*) ;; *) gh_errore "$PERMESSI_TOKEN" "$out" ;; esac
+fi
 declare -A ATTUALI
 if [ -n "$ENV_ESISTE" ]; then
   while IFS=$'\t' read -r n v; do
