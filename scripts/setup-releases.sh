@@ -13,6 +13,8 @@
 # Modalità e fasi:
 #   --from-existing   recon, bridge, shared, legacy, cleanup
 #   --new             recon, shared
+#   vars, senza modalità, stampa le vars dell'Environment come NOME=valore: la
+#   legge setup-environment.sh
 #
 # Opzioni:
 #   --url URL          URL del sito per le sonde (default: APP_URL del .env)
@@ -78,11 +80,12 @@ done
 [ -n "$COLORE" ] && colori
 
 case "$FASE" in
-  recon | bridge | shared | legacy | cleanup) ;;
+  recon | bridge | shared | legacy | cleanup | vars) ;;
   '' | -h | --help) usage; exit 0 ;;
-  *) muori "fase sconosciuta: '$FASE' (recon, bridge, shared, legacy, cleanup)" ;;
+  *) muori "fase sconosciuta: '$FASE' (recon, bridge, shared, legacy, cleanup, vars)" ;;
 esac
-[ -n "$MODO" ] || muori "manca la modalità: --new oppure --from-existing"
+# vars legge soltanto, e quello che legge non dipende dalla modalità
+[ -n "$MODO" ] || [ "$FASE" = vars ] || muori "manca la modalità: --new oppure --from-existing"
 [ -n "$BASE" ] || muori "manca il percorso BASE, es. /home/utente/dominio.it"
 case "$BASE" in /*) ;; *) muori "BASE deve essere un percorso assoluto: $BASE" ;; esac
 case "$TIMEOUT" in '' | *[!0-9]*) muori "--timeout vuole un numero di secondi" ;; esac
@@ -107,7 +110,7 @@ BASE_DATO="${BASE%/}"
 BASE="$(cd "$BASE" && pwd -P)"
 case "$BASE" in
   / | "$(cd "${HOME:-/}" 2>/dev/null && pwd -P)")
-    [ "$FASE" = recon ] || muori "BASE è $BASE: questo script lavora sulla cartella di un dominio, non su / né sulla home"
+    [ "$FASE" = recon ] || [ "$FASE" = vars ] || muori "BASE è $BASE: questo script lavora sulla cartella di un dominio, non su / né sulla home"
     ;;
 esac
 
@@ -899,6 +902,25 @@ EOF
   say "rete di sicurezza da qui:  ln -sfn '$LEGACY' '$CUR.new' && mv -Tf '$CUR.new' '$CUR'"
   say "poi: spostare i cron su $BASE/current/artisan, rotation-exclude: 000-legacy nel deploy.yml,"
   say "recon finché non dice pronto, e primo deploy sullo stesso commit già in produzione."
+}
+
+# ---------------------------------------------------------------------------
+# vars: le stesse di stampa_vars, in una forma che un altro script può leggere.
+# Una riga NOME=valore ciascuna, valore vuoto se non determinato, nient'altro
+# su stdout.
+
+vars() {
+  leggi_php_dominio
+  leggi_php_bin
+  f="$(env_file)"
+  printf 'RELEASES_PATH=%s\n' "$RELS"
+  printf 'SHARED_PATH=%s\n' "$SH"
+  printf 'CURRENT_PATH=%s\n' "$CUR"
+  printf 'TMP_PATH=%s\n' "$TMPD"
+  printf 'PHP_BIN=%s\n' "$PHP_BIN"
+  printf 'APP_NAME=%s\n' "$( [ -n "$f" ] && env_var "$f" APP_NAME || true)"
+  printf 'DOMAIN_PHP=%s\n' "$(ea_mm "$DOM_PHP")"
+  printf 'SHARED_ENV=%s\n' "$( [ -f "$SH/.env" ] && echo 1 || echo 0)"
 }
 
 "$FASE"

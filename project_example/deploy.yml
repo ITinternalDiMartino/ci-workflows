@@ -3,7 +3,9 @@ name: Deploy
 # Esempio di chiamata alla pipeline di deploy condivisa.
 #
 # Prima del primo deploy, sull'Environment GitHub indicato in "environment"
-# vanno create:
+# vanno create le voci qui sotto. scripts/setup-environment.sh di questo
+# repository le crea tutte tranne GH_TOKEN, leggendo i valori dal server e dal
+# proprio known_hosts (vedi scripts/README.md):
 #
 #   vars     RELEASES_PATH   percorso assoluto della directory delle release
 #            SHARED_PATH     percorso assoluto della directory condivisa
