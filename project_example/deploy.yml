@@ -1,39 +1,15 @@
 name: Deploy
 
-# Esempio di chiamata alla pipeline di deploy condivisa.
+# Chiamata alla pipeline di deploy condivisa.
 #
-# Prima del primo deploy, sull'Environment GitHub indicato in "environment"
-# vanno create le voci qui sotto. scripts/setup-environment.sh di questo
-# repository le crea tutte tranne GH_TOKEN, leggendo i valori dal server e dal
-# proprio known_hosts (vedi scripts/README.md):
+# Prima del primo deploy, dal repository ci-workflows (vedi scripts/README.md):
+#   - scripts/setup-releases.sh prepara il layout sul server;
+#   - scripts/setup-environment.sh crea l'Environment con vars e secret.
+# GH_TOKEN va creato a parte, di solito come secret dell'organizzazione.
 #
-#   vars     RELEASES_PATH   percorso assoluto della directory delle release
-#            SHARED_PATH     percorso assoluto della directory condivisa
-#                            (contiene .env e storage/, persistenti fra release)
-#            CURRENT_PATH    percorso del symlink alla release attiva,
-#                            cioè il document root del vhost
-#            TMP_PATH        directory di transito per l'archivio
-#            PHP_BIN         percorso assoluto del binario PHP del dominio
-#                            (es. /opt/cpanel/ea-php84/root/usr/bin/php), non
-#                            quello di `which php`, che su cPanel è il PHP di
-#                            sistema
-#            APP_NAME        facoltativa: nome applicazione compilato dentro il
-#                            bundle Vite. Se assente si usa il nome del repository
-#
-#   secrets  GH_TOKEN        token con accesso ai repository privati
-#                            dell'organizzazione, per composer e npm
-#            SSH_PRIVATE_KEY chiave privata di deploy, con newline finale
-#            SSH_KNOWN_HOSTS contenuto di known_hosts per l'host di destinazione
-#            SSH_HOST        host SSH del server
-#            SSH_USER        utente SSH del server
-#            SSH_PORT        porta SSH del server
-#
-# Sul server, prima del primo deploy, devono già esistere SHARED_PATH/.env e
-# SHARED_PATH/storage/: la pipeline li collega, non li crea. Il layout, su un
-# dominio nuovo o migrando un sito già in linea, lo prepara
-# scripts/setup-releases.sh di questo repository: fasi, trappole e ordine del
-# cutover sono in scripts/README.md. La sua fase "shared" stampa le vars qui
-# sopra già compilate.
+# Su un progetto migrato il primo deploy va fatto sullo stesso commit già in
+# produzione: da Actions, "Run workflow" su un branch o un tag che punta a quel
+# commit.
 
 on:
   push:
@@ -45,22 +21,14 @@ jobs:
     uses: ITinternalDiMartino/ci-workflows/.github/workflows/laravel-projects-deploy.yml@main
     with:
       environment: qat
+      # la versione del PHP del dominio: setup-environment.sh la stampa
       php-version: "8.4"
-      node-version: "22"
-      # va lasciato a false se il progetto ha rotte dichiarate con closure
-      cache-routes: false
-      # obbligatoria su un progetto migrato con setup-releases.sh: 000-legacy è
-      # la copia pre-migrazione e, senza questa riga, la prima release che la
-      # rotazione cancella (vedi scripts/README.md)
-      # rotation-exclude: 000-legacy
-      # 'server' misura la salute del sito dalla connessione SSH invece che dal
-      # runner: serve solo dove una protezione anti-bot dell'hosting sfida gli
-      # IP di GitHub e farebbe fallire ogni deploy con l'ambiente sano.
-      # smoke-from: server
-      # smoke-timeout: 60
-      # percorso, in questo repository, di uno script che decide i verdetti
-      # dello smoke test: serve se vuoi quelle decisioni sotto test nella tua
-      # suite invece che dentro il workflow.
+      # la copia pre-migrazione: senza questa riga è la prima release che la
+      # rotazione cancella. Dove 000-legacy non esiste non ha effetto
+      rotation-exclude: 000-legacy
+      # facoltativi:
+      # cache-routes: true              # solo se nessuna rotta è una closure
+      # smoke-from: server              # se l'hosting sfida gli IP dei runner
       # decisions-script: scripts/deploy-decisions.sh
     secrets:
       GH_TOKEN: ${{ secrets.GH_TOKEN }}
@@ -69,17 +37,3 @@ jobs:
       SSH_HOST: ${{ secrets.SSH_HOST }}
       SSH_USER: ${{ secrets.SSH_USER }}
       SSH_PORT: ${{ secrets.SSH_PORT }}
-
-# La pipeline espone release, previous, url e migrations-applied. Un job
-# successivo può leggerli, per esempio per annotare la release, notificarla
-# altrove, o decidere se un rollback manuale è ancora sicuro:
-#
-#   notify:
-#     needs: call-workflow
-#     runs-on: ubuntu-latest
-#     steps:
-#       - run: |
-#           echo "release ${{ needs.call-workflow.outputs.release }} in linea"
-#           echo "precedente: ${{ needs.call-workflow.outputs.previous }}"
-#           echo "url: ${{ needs.call-workflow.outputs.url }}"
-#           echo "migrazioni applicate: ${{ needs.call-workflow.outputs.migrations-applied }}"
