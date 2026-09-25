@@ -12,24 +12,49 @@ name: Deploy
 # commit.
 
 on:
-  push:
-    branches: ["dev"]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  call-workflow:
+  qat:
+    if: github.ref_name != 'main'
     uses: ITinternalDiMartino/ci-workflows/.github/workflows/laravel-projects-deploy.yml@main
     with:
       environment: qat
       # la versione del PHP del dominio: setup-environment.sh la stampa
       php-version: "8.4"
-      # la copia pre-migrazione: senza questa riga è la prima release che la
-      # rotazione cancella. Dove 000-legacy non esiste non ha effetto
+      node-version: "22"
+      releases-keep: 1
+      smoke-from: "server"
+      smoke-timeout: 60
+      auto-rollback: false
+      # va lasciato a false se il progetto ha rotte dichiarate con closure
+      cache-routes: false
+    secrets:
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+      SSH_HOST: ${{ secrets.SSH_HOST }}
+      SSH_USER: ${{ secrets.SSH_USER }}
+      SSH_PORT: ${{ secrets.SSH_PORT }}
+
+  production:
+    if: github.ref_name == 'main'
+    uses: ITinternalDiMartino/ci-workflows/.github/workflows/laravel-projects-deploy.yml@main
+    with:
+      environment: production
+      php-version: "8.4"
+      node-version: "22"
+      releases-keep: 2
+      smoke-from: server
+      smoke-timeout: 60
+      auto-rollback: false
+      decisions-script: scripts/deploy-decisions.sh
       rotation-exclude: 000-legacy
-      # facoltativi:
-      # cache-routes: true              # solo se nessuna rotta è una closure
-      # smoke-from: server              # se l'hosting sfida gli IP dei runner
-      # decisions-script: scripts/deploy-decisions.sh
+      # va lasciato a false se il progetto ha rotte dichiarate con closure
+      cache-routes: false
     secrets:
       GH_TOKEN: ${{ secrets.GH_TOKEN }}
       SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
