@@ -8,10 +8,10 @@ name: Deploy
 #
 # Rollback: se uno step dopo l'attivazione fallisce, current torna da sé alla
 # release precedente (input auto-rollback). Riporta indietro il codice, non il
-# database, quindi non gira quando questo deploy ha applicato migrazioni: la
-# release precedente si troverebbe davanti a uno schema che non conosce. In
-# quel caso il run lo dice e si ferma. Il riepilogo stampa comunque il comando
-# per rifare lo swap a mano.
+# database, quindi non gira quando questo deploy ha applicato migrazioni o
+# eseguito comandi post-migrate: la release precedente si troverebbe davanti a
+# uno schema o a dati che non conosce. In quel caso il run lo dice e si ferma.
+# Il riepilogo stampa comunque il comando per rifare lo swap a mano.
 #
 # Smoke test: per default misura dal runner, che attraversa anche CDN e
 # protezioni davanti al server. Dove una protezione anti-bot sfida gli IP dei
@@ -89,6 +89,16 @@ on:
         required: false
         default: true
         type: boolean
+      post-migrate-commands:
+        description: >-
+          Comandi da eseguire nella release nuova subito dopo le migrazioni,
+          prima dell'attivazione. Uno per riga, passati a PHP_BIN (es.
+          'artisan db:seed --class=PermissionSeeder --force'). Se un comando
+          fallisce, current non si muove. Se valorizzato, il deploy conta come
+          se avesse applicato migrazioni e il rollback automatico non gira
+        required: false
+        default: ""
+        type: string
       cache-routes:
         description: "Esegue anche route:cache. Va lasciato a false se il progetto ha rotte dichiarate con closure: la serializzazione fallirebbe"
         required: false
@@ -131,8 +141,8 @@ on:
         description: >-
           Riporta current alla release precedente se uno step dopo
           l'attivazione fallisce. Non gira se questo deploy ha applicato
-          migrazioni: rimetterebbe il codice precedente davanti a uno schema
-          che non conosce
+          migrazioni o eseguito post-migrate-commands: rimetterebbe il codice
+          precedente davanti a uno schema o a dati che non conosce
         required: false
         default: true
         type: boolean
@@ -166,7 +176,7 @@ on:
         description: "APP_URL letto dalla shared e usato per lo smoke test"
         value: ${{ jobs.deploy.outputs.url }}
       migrations-applied:
-        description: "'true' se questo deploy ha applicato migrazioni, cioè se il rollback del solo codice non è sicuro"
+        description: "'true' se questo deploy ha applicato migrazioni o eseguito post-migrate-commands, cioè se il rollback del solo codice non è sicuro"
         value: ${{ jobs.deploy.outputs.migrations-applied }}
 
 permissions:
@@ -368,7 +378,7 @@ jobs:
     outputs:
       previous: ${{ steps.activate.outputs.prev }}
       url: ${{ steps.appurl.outputs.url }}
-      migrations-applied: ${{ steps.migrations.outputs.applied }}
+      migrations-applied: ${{ steps.migrations.outputs.applied == 'true' || steps.post_migrate.outputs.ran == 'true' }}
     env:
       RELEASE: ${{ needs.build.outputs.release }}
       ARCHIVE: ${{ needs.build.outputs.archive }}
@@ -582,6 +592,29 @@ jobs:
             echo "::error::migrate --force fallito. current non è stata spostata, ma il database può essere parzialmente migrato: controlla 'artisan migrate:status' prima di rilanciare il deploy."
             exit 1
           fi
+
+      # Stessa garanzia delle migrazioni: girano prima dello swap, quindi se un
+      # comando fallisce current resta dov'è. Un comando può scrivere sul
+      # database quanto una migrazione, per cui l'output 'ran' viene scritto
+      # prima di eseguirli e spegne il rollback automatico come 'applied'.
+      - name: Run post-migrate commands
+        id: post_migrate
+        if: inputs.post-migrate-commands != ''
+        env:
+          COMMANDS: ${{ inputs.post-migrate-commands }}
+        run: |
+          echo "ran=true" >> "$GITHUB_OUTPUT"
+
+          printf '%s\n' "$COMMANDS" | while IFS= read -r COMMAND; do
+            [ -n "$(printf '%s' "$COMMAND" | tr -d '[:space:]')" ] || continue
+            echo "::group::$COMMAND"
+            if ! ssh target "cd '$RELEASES_PATH/$RELEASE' && '$PHP_BIN' $COMMAND" </dev/null; then
+              echo "::endgroup::"
+              echo "::error::'$COMMAND' fallito. current non è stata spostata, ma le migrazioni e i comandi precedenti di questo deploy sono già applicati: correggi e rilancia il deploy."
+              exit 1
+            fi
+            echo "::endgroup::"
+          done
 
       # I file di cache contengono path assoluti della release, quindi si
       # generano qui e non in fase di build.
@@ -835,6 +868,7 @@ jobs:
           && steps.activate.outcome == 'success'
           && steps.activate.outputs.prev != ''
           && steps.migrations.outputs.applied != 'true'
+          && steps.post_migrate.outputs.ran != 'true'
         env:
           PREV: ${{ steps.activate.outputs.prev }}
         run: |
@@ -866,9 +900,9 @@ jobs:
         if: >-
           failure() && inputs.auto-rollback
           && steps.activate.outcome == 'success'
-          && steps.migrations.outputs.applied == 'true'
+          && (steps.migrations.outputs.applied == 'true' || steps.post_migrate.outputs.ran == 'true')
         run: |
-          echo "::warning::deploy fallito dopo l'attivazione, ma questo deploy ha applicato migrazioni: il rollback automatico non gira, perché rimetterebbe il codice precedente davanti a uno schema che non conosce. Il riepilogo riporta il comando per lo swap manuale, da eseguire solo dopo aver valutato lo stato del database."
+          echo "::warning::deploy fallito dopo l'attivazione, ma questo deploy ha applicato migrazioni o eseguito comandi post-migrate: il rollback automatico non gira, perché rimetterebbe il codice precedente davanti a uno schema o a dati che non conosce. Il riepilogo riporta il comando per lo swap manuale, da eseguire solo dopo aver valutato lo stato del database."
 
       # La rotazione gira solo a deploy riuscito: dopo un rollback la release
       # precedente deve restare dov'è.
@@ -921,6 +955,7 @@ jobs:
           ACTIVATE_OUTCOME: ${{ steps.activate.outcome }}
           ROLLBACK_OUTCOME: ${{ steps.rollback.outcome }}
           MIGRATIONS_APPLIED: ${{ steps.migrations.outputs.applied }}
+          POST_MIGRATE_RAN: ${{ steps.post_migrate.outputs.ran }}
         run: |
           {
             echo "## Deploy ${{ inputs.environment }}"
@@ -931,6 +966,7 @@ jobs:
             echo "| Precedente | \`${PREV:-n/d}\` |"
             echo "| Attivazione | \`${ACTIVATE_OUTCOME:-non eseguita}\` |"
             echo "| Migrazioni applicate | \`${MIGRATIONS_APPLIED:-no}\` |"
+            echo "| Comandi post-migrate | \`${POST_MIGRATE_RAN:-no}\` |"
             echo "| Rollback automatico | \`${ROLLBACK_OUTCOME:-non eseguito}\` |"
             echo "| URL | ${URL:-n/d} |"
             echo
