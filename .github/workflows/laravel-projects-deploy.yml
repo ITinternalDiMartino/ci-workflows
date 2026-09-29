@@ -89,6 +89,15 @@ on:
         required: false
         default: true
         type: boolean
+      run-seeders:
+        description: >-
+          Esegue artisan db:seed --force dopo le migrazioni e prima di attivare
+          la release. Gira a ogni deploy, produzione compresa: va acceso solo
+          se il DatabaseSeeder si può rilanciare senza creare doppioni e non
+          semina dati demo fuori dall'ambiente local
+        required: false
+        default: false
+        type: boolean
       cache-routes:
         description: "Esegue anche route:cache. Va lasciato a false se il progetto ha rotte dichiarate con closure: la serializzazione fallirebbe"
         required: false
@@ -580,6 +589,17 @@ jobs:
 
           if ! ssh target "cd '$RELEASES_PATH/$RELEASE' && '$PHP_BIN' artisan migrate --force"; then
             echo "::error::migrate --force fallito. current non è stata spostata, ma il database può essere parzialmente migrato: controlla 'artisan migrate:status' prima di rilanciare il deploy."
+            exit 1
+          fi
+
+      # Il seed gira dopo le migrazioni, perché riempie le tabelle che creano,
+      # e prima dell'attivazione: la release nuova parte con i dati che si
+      # aspetta, e se il seed fallisce current resta dov'è.
+      - name: Run seeders
+        if: inputs.run-seeders
+        run: |
+          if ! ssh target "cd '$RELEASES_PATH/$RELEASE' && '$PHP_BIN' artisan db:seed --force"; then
+            echo "::error::db:seed --force fallito. current non è stata spostata, ma le migrazioni di questo deploy sono già applicate e il seed può essere parziale: correggi e rilancia il deploy."
             exit 1
           fi
 
