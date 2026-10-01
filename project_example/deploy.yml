@@ -32,6 +32,9 @@ jobs:
       auto-rollback: false
       # va lasciato a false se il progetto ha rotte dichiarate con closure
       cache-routes: false
+      #post-migrate-commands: |
+        #artisan db:seed --class=PermissionSeeder --force
+        #artisan db:seed --class=RoleSeeder --force
     secrets:
       GH_TOKEN: ${{ secrets.GH_TOKEN }}
       SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
@@ -55,6 +58,9 @@ jobs:
       rotation-exclude: 000-legacy
       # va lasciato a false se il progetto ha rotte dichiarate con closure
       cache-routes: false
+      #post-migrate-commands: |
+        #artisan db:seed --class=PermissionSeeder --force
+        #artisan db:seed --class=RoleSeeder --force
     secrets:
       GH_TOKEN: ${{ secrets.GH_TOKEN }}
       SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
