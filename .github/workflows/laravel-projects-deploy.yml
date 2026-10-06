@@ -361,7 +361,7 @@ jobs:
       - name: Upload release archive
         uses: actions/upload-artifact@v7
         with:
-          name: release
+          name: release-${{ inputs.environment }}
           path: ${{ runner.temp }}/${{ steps.meta.outputs.archive }}
           retention-days: 7
           if-no-files-found: error
@@ -414,7 +414,7 @@ jobs:
       - name: Download release archive
         uses: actions/download-artifact@v8
         with:
-          name: release
+          name: release-${{ inputs.environment }}
           path: ${{ runner.temp }}/dl
 
       - name: Configure SSH
