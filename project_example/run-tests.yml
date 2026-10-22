@@ -15,5 +15,6 @@ jobs:
     uses: ITinternalDiMartino/ci-workflows/.github/workflows/laravel-projects-run-tests.yml@main
     with:
       php-versions: '["8.3"]'
+      # database: pgsql   # default mysql
     secrets:
       GH_TOKEN: ${{ secrets.GH_TOKEN }}
