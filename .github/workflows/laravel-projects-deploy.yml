@@ -375,6 +375,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      deployments: write
     outputs:
       previous: ${{ steps.activate.outputs.prev }}
       url: ${{ steps.appurl.outputs.url }}
@@ -854,6 +857,29 @@ jobs:
             3) echo "::warning::nel log sono comparse righe ERROR dopo lo swap: controllale" ;;
             *) echo "::warning::non è stato possibile leggere il log (rc=$rc)" ;;
           esac
+
+      - name: Record server versions
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          PHP_VERSION="$(ssh target "'$PHP_BIN' -r 'echo PHP_VERSION;'" || true)"
+          LARAVEL_VERSION="$(ssh target "cd '$RELEASES_PATH/$RELEASE' && '$PHP_BIN' artisan --version --no-ansi" | awk '{print $NF}' || true)"
+          if [ -z "$PHP_VERSION" ] || [ -z "$LARAVEL_VERSION" ]; then
+            echo "::warning::versioni del server non lette (php='$PHP_VERSION' laravel='$LARAVEL_VERSION')"
+            exit 0
+          fi
+          DEPLOYMENT_ID="$(gh api -X GET "repos/$GITHUB_REPOSITORY/deployments" \
+            -f environment="$ENVIRONMENT" -f sha="$GITHUB_SHA" -f per_page=1 -q '.[0].id // empty')"
+          if [ -z "$DEPLOYMENT_ID" ]; then
+            echo "::warning::nessun deployment per $ENVIRONMENT@$GITHUB_SHA"
+            exit 0
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/deployments/$DEPLOYMENT_ID/statuses" \
+            -f state=success -f environment="$ENVIRONMENT" \
+            -f description="php=$PHP_VERSION laravel=$LARAVEL_VERSION" > /dev/null
+          echo "php=$PHP_VERSION laravel=$LARAVEL_VERSION registrate sul deployment $DEPLOYMENT_ID"
 
       # Rollback automatico: current torna alla release precedente se uno step
       # dopo l'attivazione è fallito (smoke test, log, rotazione). La condizione
