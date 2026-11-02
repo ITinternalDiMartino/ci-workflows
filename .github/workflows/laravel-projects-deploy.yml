@@ -148,7 +148,7 @@ on:
         type: boolean
     secrets:
       GH_TOKEN:
-        description: "Token con accesso ai repository privati dell'organizzazione, per composer e npm"
+        description: "Token con accesso ai repository privati dell'organizzazione, per composer e npm, e con Deployments in scrittura per registrare le versioni del server"
         required: true
       SSH_PRIVATE_KEY:
         description: "Chiave privata di deploy, completa di newline finale"
@@ -375,9 +375,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: ${{ inputs.environment }}
-    permissions:
-      contents: read
-      deployments: write
     outputs:
       previous: ${{ steps.activate.outputs.prev }}
       url: ${{ steps.appurl.outputs.url }}
@@ -861,7 +858,7 @@ jobs:
       - name: Record server versions
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
           ENVIRONMENT: ${{ inputs.environment }}
         run: |
           PHP_VERSION="$(ssh target "'$PHP_BIN' -r 'echo PHP_VERSION;'" || true)"
