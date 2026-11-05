@@ -14,7 +14,7 @@ on:
         default: "8.3"
         type: string
       generate-wayfinder:
-        description: "Genera i file TypeScript di Wayfinder, che sono in gitignore e senza i quali gli import `@/actions` e `@/routes` non risolvono"
+        description: "Genera i file TypeScript di Wayfinder, che sono in gitignore e senza i quali gli import `@/actions` e `@/routes` non risolvono. Si applica solo se il progetto richiede `laravel/wayfinder` in composer.json"
         required: false
         default: true
         type: boolean
@@ -75,15 +75,31 @@ jobs:
       # gitignore: in sviluppo li rigenera il plugin Vite, ma vitest non lo carica, e sul
       # runner mancano del tutto. Senza di loro ogni componente che importa `@/actions/…`
       # non risolve e il file di test fallisce prima di eseguire un'asserzione.
+      # I progetti che non usano Wayfinder (es. quelli con Ziggy) non hanno il comando
+      # `wayfinder:generate`: per loro la generazione, e con lei PHP e Composer, si salta.
+      - name: Detect Wayfinder
+        id: wayfinder
+        env:
+          GENERATE_WAYFINDER: ${{ inputs.generate-wayfinder }}
+        run: |
+          if [ "$GENERATE_WAYFINDER" != "true" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          elif jq -e '((.require // {}) + (."require-dev" // {})) | has("laravel/wayfinder")' composer.json > /dev/null 2>&1; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::laravel/wayfinder non è tra le dipendenze di composer.json: generazione dei file Wayfinder saltata."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Setup PHP
-        if: ${{ inputs.generate-wayfinder }}
+        if: ${{ steps.wayfinder.outputs.enabled == 'true' }}
         uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ inputs.php-version }}
           coverage: none
 
       - name: Configure Composer authentication
-        if: ${{ inputs.generate-wayfinder }}
+        if: ${{ steps.wayfinder.outputs.enabled == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
@@ -96,11 +112,11 @@ jobs:
           fi
 
       - name: Install composer dependencies
-        if: ${{ inputs.generate-wayfinder }}
+        if: ${{ steps.wayfinder.outputs.enabled == 'true' }}
         uses: ramsey/composer-install@v4
 
       - name: Generate Wayfinder files
-        if: ${{ inputs.generate-wayfinder }}
+        if: ${{ steps.wayfinder.outputs.enabled == 'true' }}
         run: |
           # artisan legge la configurazione all'avvio: senza .env e senza APP_KEY il
           # comando non arriva a registrare le rotte da cui ricava i file.
