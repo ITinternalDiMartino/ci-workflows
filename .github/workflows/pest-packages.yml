@@ -42,11 +42,6 @@ jobs:
         php: ${{ fromJson(inputs.php-versions) }}
         laravel: ${{ fromJson(inputs.laravel-versions) }}
         stability: ${{ fromJson(inputs.stability) }}
-        include:
-          - laravel: 13.*
-            testbench: 11.*
-          - laravel: 12.*
-            testbench: 10.*
 
     name: P${{ matrix.php }} - L${{ matrix.laravel }} - ${{ matrix.stability }} - ${{ matrix.os }}
 
@@ -70,9 +65,23 @@ jobs:
         run: composer config --global --auth github-oauth.github.com ${{ secrets.GH_TOKEN }}
 
       - name: Install dependencies
+        env:
+          LARAVEL: ${{ matrix.laravel }}
+          STABILITY: ${{ matrix.stability }}
         run: |
-          composer require "laravel/framework:${{ matrix.laravel }}" "orchestra/testbench:${{ matrix.testbench }}" --no-interaction --no-update
-          composer update --${{ matrix.stability }} --prefer-dist --no-interaction
+          # The testbench version follows from the Laravel one. Mapping it here, rather than
+          # with matrix include entries, avoids the stray job GitHub adds for an include
+          # entry that matches no requested Laravel version.
+          case "$LARAVEL" in
+            13.*) testbench="11.*" ;;
+            12.*) testbench="10.*" ;;
+            *)
+              echo "::error::Laravel $LARAVEL is not supported: use 13.* or 12.*"
+              exit 1
+              ;;
+          esac
+          composer require "laravel/framework:$LARAVEL" "orchestra/testbench:$testbench" --no-interaction --no-update
+          composer update "--$STABILITY" --prefer-dist --no-interaction
 
       - name: List Installed Dependencies
         run: composer show -D
