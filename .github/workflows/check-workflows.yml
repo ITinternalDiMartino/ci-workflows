@@ -1,0 +1,49 @@
+name: Check workflows
+
+# Protegge i repository che chiamano i workflow di ci-workflows: actionlint trova
+# gli errori di sintassi ed espressione, check-workflow-references.sh trova i
+# riferimenti a workflow rinominati o cancellati.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Solo warning ed errori di shellcheck: le note informative (es. SC2029 sulle
+      # variabili espanse in locale nei comandi ssh del deploy) sono volute.
+      - name: Run actionlint
+        run: |
+          docker run --rm -e SHELLCHECK_OPTS=--severity=warning \
+            -v "$PWD:/repo:ro" -w /repo rhysd/actionlint:1.7.7 -no-color
+
+  references:
+    name: Workflow references
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # STRICT diventa "true" quando i repository chiamanti sono stati sistemati
+      # (ITinternalDiMartino/ci-workflows#59): da lì un riferimento rotto fa fallire il job.
+      - name: Check references to ci-workflows
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          STRICT: "false"
+        run: scripts/check-workflow-references.sh
