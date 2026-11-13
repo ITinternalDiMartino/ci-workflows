@@ -40,21 +40,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      # ORG_READ_TOKEN deve leggere i contenuti di tutti i repository dell'organizzazione.
-      # GH_TOKEN, usato per composer e npm, non vede tutti i progetti: col solo GH_TOKEN il
-      # controllo è parziale, e questo step lo segnala.
-      - name: Warn when the organisation-wide token is missing
-        env:
-          HAS_ORG_READ_TOKEN: ${{ secrets.ORG_READ_TOKEN != '' }}
-        run: |
-          if [ "$HAS_ORG_READ_TOKEN" != "true" ]; then
-            echo "::warning title=Controllo parziale::Segreto ORG_READ_TOKEN assente: uso GH_TOKEN, che non vede tutti i repository dell'organizzazione."
-          fi
-
+      # GH_TOKEN deve leggere i contenuti di tutti i repository dell'organizzazione:
+      # GraphQL salta in silenzio quelli che il token non vede, quindi il riepilogo
+      # riporta quanti repository sono stati letti.
       # STRICT diventa "true" quando i repository chiamanti sono stati sistemati
       # (ITinternalDiMartino/ci-workflows#59): da lì un riferimento rotto fa fallire il job.
       - name: Check references to ci-workflows
         env:
-          GH_TOKEN: ${{ secrets.ORG_READ_TOKEN || secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
           STRICT: "false"
         run: scripts/check-workflow-references.sh
