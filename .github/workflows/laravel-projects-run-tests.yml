@@ -1,0 +1,42 @@
+# Nome deprecato: il workflow si chiama ora pest.yml. Questo file inoltra soltanto
+# input e segreti a pest.yml e verrà eliminato quando nessun repository lo chiamerà più
+# (ITinternalDiMartino/ci-workflows#59).
+name: Pest (deprecato, usare pest)
+
+on:
+  workflow_call:
+    inputs:
+      php-versions:
+        description: "Lista delle versioni PHP in formato JSON"
+        required: false
+        default: '["8.3"]'
+        type: string
+      node-version:
+        description: "Versione di Node.js"
+        required: false
+        default: "22"
+        type: string
+      database:
+        description: "Database dei test: mysql o pgsql"
+        required: false
+        default: "mysql"
+        type: string
+      postgres-version:
+        description: "Versione dell'immagine postgres, usata solo con database pgsql"
+        required: false
+        default: "17"
+        type: string
+    secrets:
+      GH_TOKEN:
+        required: true
+
+jobs:
+  pest:
+    uses: ./.github/workflows/pest.yml
+    with:
+      php-versions: ${{ inputs.php-versions }}
+      node-version: ${{ inputs.node-version }}
+      database: ${{ inputs.database }}
+      postgres-version: ${{ inputs.postgres-version }}
+    secrets:
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}

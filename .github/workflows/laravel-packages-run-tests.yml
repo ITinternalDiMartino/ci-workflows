@@ -1,0 +1,42 @@
+# Nome deprecato: il workflow si chiama ora pest-packages.yml. Questo file inoltra soltanto
+# input e segreti a pest-packages.yml e verrà eliminato quando nessun repository lo chiamerà più
+# (ITinternalDiMartino/ci-workflows#59).
+name: Pest Packages (deprecato, usare pest-packages)
+
+on:
+  workflow_call:
+    inputs:
+      os:
+        description: "Lista dei sistemi operativi in formato JSON"
+        required: false
+        default: '["ubuntu-latest"]'
+        type: string
+      php-versions:
+        description: "Lista delle versioni PHP in formato JSON"
+        required: false
+        default: '["8.3"]'
+        type: string
+      laravel-versions:
+        description: "Lista delle versioni Laravel in formato JSON"
+        required: false
+        default: '["13.*", "12.*"]'
+        type: string
+      stability:
+        description: "Lista stabilità Composer in formato JSON"
+        required: false
+        default: '["prefer-stable"]'
+        type: string
+    secrets:
+      GH_TOKEN:
+        required: true
+
+jobs:
+  pest-packages:
+    uses: ./.github/workflows/pest-packages.yml
+    with:
+      os: ${{ inputs.os }}
+      php-versions: ${{ inputs.php-versions }}
+      laravel-versions: ${{ inputs.laravel-versions }}
+      stability: ${{ inputs.stability }}
+    secrets:
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}

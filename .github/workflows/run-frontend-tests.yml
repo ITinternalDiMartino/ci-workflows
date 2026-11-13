@@ -1,0 +1,49 @@
+# Nome deprecato: il workflow si chiama ora vitest.yml. Questo file inoltra soltanto
+# input e segreti a vitest.yml e verrà eliminato quando nessun repository lo chiamerà più
+# (ITinternalDiMartino/ci-workflows#59).
+name: Vitest (deprecato, usare vitest)
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: "Versione di Node.js"
+        required: false
+        default: "22"
+        type: string
+      php-version:
+        description: "Versione PHP usata per generare i file di Wayfinder"
+        required: false
+        default: "8.3"
+        type: string
+      generate-wayfinder:
+        description: "Genera i file TypeScript di Wayfinder, che sono in gitignore e senza i quali gli import `@/actions` e `@/routes` non risolvono. Si applica solo se il progetto richiede `laravel/wayfinder` in composer.json"
+        required: false
+        default: true
+        type: boolean
+      test-script:
+        description: "Script npm che esegue la suite front-end"
+        required: false
+        default: "test"
+        type: string
+      timezone:
+        description: "Fuso orario del runner, per non far dipendere le date dalla macchina"
+        required: false
+        default: "Europe/Rome"
+        type: string
+    secrets:
+      GH_TOKEN:
+        description: "Token per le dipendenze ospitate su repository privati dell'organizzazione"
+        required: false
+
+jobs:
+  vitest:
+    uses: ./.github/workflows/vitest.yml
+    with:
+      node-version: ${{ inputs.node-version }}
+      php-version: ${{ inputs.php-version }}
+      generate-wayfinder: ${{ inputs.generate-wayfinder }}
+      test-script: ${{ inputs.test-script }}
+      timezone: ${{ inputs.timezone }}
+    secrets:
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
