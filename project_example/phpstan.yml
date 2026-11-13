@@ -4,14 +4,14 @@ on:
   pull_request:
     branches-ignore: ["main", "dev"]
     paths:
-      - "**/*.js"
-      - "**/*.ts"
-      - "**/*.tsx"
+      - "**.php"
+      - "phpstan.neon*"
+      - "phpstan-baseline.neon"
+      - "composer.lock"
       - ".github/workflows/phpstan.yml"
-
-permissions:
-  contents: write
 
 jobs:
   call-workflow:
     uses: ITinternalDiMartino/ci-workflows/.github/workflows/phpstan.yml@main
+    secrets:
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
