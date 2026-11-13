@@ -9,9 +9,6 @@ on:
       - "**/*.tsx"
       - ".github/workflows/eslint.yml"
 
-permissions:
-  contents: write
-
 jobs:
   call-workflow:
     uses: ITinternalDiMartino/ci-workflows/.github/workflows/eslint.yml@main
