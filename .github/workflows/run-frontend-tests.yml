@@ -1,4 +1,7 @@
-name: Run Frontend Tests
+# Nome deprecato: il workflow si chiama ora vitest.yml. Questo file inoltra soltanto
+# input e segreti a vitest.yml e verrà eliminato quando nessun repository lo chiamerà più
+# (ITinternalDiMartino/ci-workflows#59).
+name: Vitest (deprecato, usare vitest)
 
 on:
   workflow_call:
@@ -34,99 +37,13 @@ on:
         required: false
 
 jobs:
-  frontend-tests:
-    name: Run Frontend Tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      TZ: ${{ inputs.timezone }}
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version: ${{ inputs.node-version }}
-          cache: npm
-
-      - name: Configure git authentication for private npm dependencies
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-        if: ${{ env.GH_TOKEN != '' }}
-        run: |
-          # actions/checkout installs a repository-scoped credential, in recent versions
-          # through a config file pulled in via includeIf. It wins over anything we add and
-          # cannot read other private repositories, so npm fails on a private dependency.
-          # Drop it and authenticate with GH_TOKEN, which spans the organisation and still
-          # allows pushing. npm also normalises GitHub URLs to ssh, hence the second rule.
-          for key in $(git config --local --name-only --get-regexp '^includeif\.' || true); do
-            git config --local --unset-all "$key" || true
-          done
-          git config --local --unset-all http."https://github.com/".extraheader || true
-          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
-          git config --global --add url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "ssh://git@github.com/"
-
-      - name: Install Node dependencies
-        run: npm ci
-
-      # I file che Wayfinder scrive in resources/js/{actions,routes,wayfinder} sono in
-      # gitignore: in sviluppo li rigenera il plugin Vite, ma vitest non lo carica, e sul
-      # runner mancano del tutto. Senza di loro ogni componente che importa `@/actions/…`
-      # non risolve e il file di test fallisce prima di eseguire un'asserzione.
-      # I progetti che non usano Wayfinder (es. quelli con Ziggy) non hanno il comando
-      # `wayfinder:generate`: per loro la generazione, e con lei PHP e Composer, si salta.
-      - name: Detect Wayfinder
-        id: wayfinder
-        env:
-          GENERATE_WAYFINDER: ${{ inputs.generate-wayfinder }}
-        run: |
-          if [ "$GENERATE_WAYFINDER" != "true" ]; then
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-          elif jq -e '((.require // {}) + (."require-dev" // {})) | has("laravel/wayfinder")' composer.json > /dev/null 2>&1; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::notice::laravel/wayfinder non è tra le dipendenze di composer.json: generazione dei file Wayfinder saltata."
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Setup PHP
-        if: ${{ steps.wayfinder.outputs.enabled == 'true' }}
-        uses: shivammathur/setup-php@v2
-        with:
-          php-version: ${{ inputs.php-version }}
-          coverage: none
-
-      - name: Configure Composer authentication
-        if: ${{ steps.wayfinder.outputs.enabled == 'true' }}
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-        run: |
-          # Il token è opzionale: senza questo controllo il comando fallirebbe per
-          # argomento mancante, invece di lasciar parlare composer install.
-          if [ -n "$GH_TOKEN" ]; then
-            composer config --global --auth github-oauth.github.com "$GH_TOKEN"
-          else
-            echo "::warning::GH_TOKEN assente: i pacchetti Composer privati dell'organizzazione non saranno scaricabili."
-          fi
-
-      - name: Install composer dependencies
-        if: ${{ steps.wayfinder.outputs.enabled == 'true' }}
-        uses: ramsey/composer-install@v4
-
-      - name: Generate Wayfinder files
-        if: ${{ steps.wayfinder.outputs.enabled == 'true' }}
-        run: |
-          # artisan legge la configurazione all'avvio: senza .env e senza APP_KEY il
-          # comando non arriva a registrare le rotte da cui ricava i file.
-          if [ ! -f .env ] && [ -f .env.example ]; then
-            cp .env.example .env
-          fi
-          php artisan key:generate --force
-          # `--with-form` allinea l'output a `formVariants: true` del plugin Vite: su un
-          # progetto che non usa le varianti form aggiunge solo righe che nessuno importa.
-          php artisan wayfinder:generate --with-form
-
-      - name: Run frontend tests
-        run: npm run ${{ inputs.test-script }}
+  vitest:
+    uses: ./.github/workflows/vitest.yml
+    with:
+      node-version: ${{ inputs.node-version }}
+      php-version: ${{ inputs.php-version }}
+      generate-wayfinder: ${{ inputs.generate-wayfinder }}
+      test-script: ${{ inputs.test-script }}
+      timezone: ${{ inputs.timezone }}
+    secrets:
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
