@@ -10,7 +10,9 @@
 #
 # Uso: scripts/check-workflow-references.sh
 # Ambiente:
-#   GH_TOKEN  token con lettura dei contenuti dei repository dell'organizzazione
+#   GH_TOKEN  token con lettura dei contenuti di TUTTI i repository dell'organizzazione:
+#             quelli che il token non vede vengono saltati senza errore, quindi il
+#             numero di repository letti è stampato nel riepilogo
 #   ORG       organizzazione (predefinita: ITinternalDiMartino)
 #   STRICT    "true": i riferimenti rotti sono errori e lo script esce con 1;
 #             altrimenti sono avvisi e lo script esce con 0
@@ -24,7 +26,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PATTERN="${ORG}/ci-workflows/\\.github/workflows/[A-Za-z0-9._-]+@[A-Za-z0-9._/-]+"
 
 refs="$(mktemp)"
-trap 'rm -f "$refs"' EXIT
+repos="$(mktemp)"
+trap 'rm -f "$refs" "$repos"' EXIT
 
 # Stampa "<repository>\t<file>\t<workflow>" per ogni riferimento trovato nel testo
 # letto da stdin.
@@ -55,6 +58,8 @@ while :; do
   args=(-f query="$query" -F org="$ORG")
   [ -n "$after" ] && args+=(-F after="$after")
   page="$(gh api graphql "${args[@]}")"
+
+  jq -r '.data.organization.repositories.nodes[] | select(.isArchived | not) | .name' <<<"$page" >>"$repos"
 
   # Il repository corrente si controlla dalla copia locale, più sotto.
   jq -c '.data.organization.repositories.nodes[]
@@ -91,7 +96,7 @@ while IFS=$'\t' read -r repo file workflow; do
   fi
 done < <(sort -u "$refs")
 
-summary="Riferimenti a workflow di ci-workflows: $total, di cui $missing verso file inesistenti."
+summary="Repository non archiviati letti: $(wc -l <"$repos"). Riferimenti a workflow di ci-workflows: $total, di cui $missing verso file inesistenti."
 echo "$summary"
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   {
