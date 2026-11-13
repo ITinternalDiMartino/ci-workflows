@@ -14,6 +14,6 @@ on:
 
 jobs:
   call-workflow:
-    uses: ITinternalDiMartino/ci-workflows/.github/workflows/run-frontend-tests.yml@main
+    uses: ITinternalDiMartino/ci-workflows/.github/workflows/vitest.yml@main
     secrets:
       GH_TOKEN: ${{ secrets.GH_TOKEN }}
