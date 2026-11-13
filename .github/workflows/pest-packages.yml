@@ -1,4 +1,4 @@
-name: laravel-package-run-tests
+name: Pest Packages
 
 on:
   workflow_call:

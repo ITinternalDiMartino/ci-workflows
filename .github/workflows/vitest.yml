@@ -1,4 +1,4 @@
-name: Run Frontend Tests
+name: Vitest
 
 on:
   workflow_call:
