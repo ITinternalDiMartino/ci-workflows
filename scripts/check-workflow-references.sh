@@ -20,6 +20,11 @@
 # Dipendenze: gh, jq.
 set -euo pipefail
 
+if [ -z "${GH_TOKEN:-}" ]; then
+  echo "::error title=Token mancante::GH_TOKEN è vuoto. In CI viene da ORG_READ_TOKEN, che va impostato sia tra i segreti di Actions sia tra quelli di Dependabot."
+  exit 1
+fi
+
 ORG="${ORG:-ITinternalDiMartino}"
 STRICT="${STRICT:-false}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -34,6 +39,17 @@ trap 'rm -f "$refs" "$repos"' EXIT
 extract() {
   grep -oiE "$PATTERN" | sed -E 's|^.*/workflows/([^@]+)@.*$|\1|' |
     awk -v r="$1" -v f="$2" '{ print r "\t" f "\t" $0 }'
+}
+
+# gh api con fino a 3 tentativi: GitHub risponde a volte con un errore 5xx temporaneo,
+# che col controllo obbligatorio bloccherebbe le PR.
+gh_api_retry() {
+  local attempt
+  for attempt in 1 2 3; do
+    gh api "$@" && return 0
+    [ "$attempt" -lt 3 ] && sleep $((attempt * 5))
+  done
+  return 1
 }
 
 # Repository dell'organizzazione, 50 per pagina.
@@ -57,7 +73,7 @@ after=""
 while :; do
   args=(-f query="$query" -F org="$ORG")
   [ -n "$after" ] && args+=(-F after="$after")
-  page="$(gh api graphql "${args[@]}")"
+  page="$(gh_api_retry graphql "${args[@]}")"
 
   jq -r '.data.organization.repositories.nodes[] | select(.isArchived | not) | .name' <<<"$page" >>"$repos"
 
