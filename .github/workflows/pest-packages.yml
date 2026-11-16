@@ -33,8 +33,12 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ${{ fromJson(inputs.os)[0] }}
-    timeout-minutes: 5
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    defaults:
+      run:
+        # The steps are bash scripts, while windows runners default to PowerShell.
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
