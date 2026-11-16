@@ -35,8 +35,10 @@ jobs:
           php-version: ${{ inputs.php-version }}
           coverage: none
 
-      - name: Configure Composer Authentication
-        run: composer config --global --auth github-oauth.github.com ${{ secrets.GH_TOKEN }}
+      - name: Configure authentication for private dependencies
+        uses: ITinternalDiMartino/ci-workflows/.github/actions/private-deps-auth@main
+        with:
+          token: ${{ secrets.GH_TOKEN }}
 
       - name: Install composer dependencies
         uses: ramsey/composer-install@v4

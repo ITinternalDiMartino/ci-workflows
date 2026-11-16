@@ -27,11 +27,10 @@ jobs:
           php-version: ${{ inputs.php-version }}
           coverage: none
 
-      - name: Configure Composer Authentication
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-        if: ${{ env.GH_TOKEN != '' }}
-        run: composer config --global --auth github-oauth.github.com "$GH_TOKEN"
+      - name: Configure authentication for private dependencies
+        uses: ITinternalDiMartino/ci-workflows/.github/actions/private-deps-auth@main
+        with:
+          token: ${{ secrets.GH_TOKEN }}
 
       - name: Install PHP dependencies
         run: composer install --no-interaction --no-progress --prefer-dist

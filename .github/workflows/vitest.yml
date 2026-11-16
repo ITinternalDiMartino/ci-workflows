@@ -51,14 +51,6 @@ jobs:
           node-version: ${{ inputs.node-version }}
           cache: npm
 
-      - name: Configure git authentication for private npm dependencies
-        uses: ITinternalDiMartino/ci-workflows/.github/actions/private-deps-auth@main
-        with:
-          token: ${{ secrets.GH_TOKEN }}
-
-      - name: Install Node dependencies
-        run: npm ci
-
       # I file che Wayfinder scrive in resources/js/{actions,routes,wayfinder} sono in
       # gitignore: in sviluppo li rigenera il plugin Vite, ma vitest non lo carica, e sul
       # runner mancano del tutto. Senza di loro ogni componente che importa `@/actions/…`
@@ -86,18 +78,13 @@ jobs:
           php-version: ${{ inputs.php-version }}
           coverage: none
 
-      - name: Configure Composer authentication
-        if: ${{ steps.wayfinder.outputs.enabled == 'true' }}
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-        run: |
-          # Il token è opzionale: senza questo controllo il comando fallirebbe per
-          # argomento mancante, invece di lasciar parlare composer install.
-          if [ -n "$GH_TOKEN" ]; then
-            composer config --global --auth github-oauth.github.com "$GH_TOKEN"
-          else
-            echo "::warning::GH_TOKEN assente: i pacchetti Composer privati dell'organizzazione non saranno scaricabili."
-          fi
+      - name: Configure authentication for private dependencies
+        uses: ITinternalDiMartino/ci-workflows/.github/actions/private-deps-auth@main
+        with:
+          token: ${{ secrets.GH_TOKEN }}
+
+      - name: Install Node dependencies
+        run: npm ci
 
       - name: Install composer dependencies
         if: ${{ steps.wayfinder.outputs.enabled == 'true' }}

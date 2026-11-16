@@ -27,7 +27,7 @@ jobs:
           node-version: ${{ inputs.node-version }}
           cache: npm
 
-      - name: Configure git authentication for private npm dependencies
+      - name: Configure authentication for private dependencies
         uses: ITinternalDiMartino/ci-workflows/.github/actions/private-deps-auth@main
         with:
           token: ${{ secrets.GH_TOKEN }}
