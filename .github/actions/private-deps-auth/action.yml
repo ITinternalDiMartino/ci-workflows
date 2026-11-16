@@ -1,31 +1,58 @@
 name: Private dependencies authentication
 description: >-
-  Lets npm fetch dependencies hosted on private repositories of the organisation,
-  authenticating git with the given token. Does nothing when the token is empty.
+  Lets git, npm and Composer fetch dependencies hosted on private repositories of the
+  organisation, authenticating with the given token.
 
 inputs:
   token:
-    description: "Token con lettura sui repository privati dell'organizzazione. Se è vuoto l'action non fa niente"
+    description: "Token con lettura sui repository privati dell'organizzazione"
     required: false
     default: ""
+  required:
+    description: >-
+      "true": senza token l'action fallisce (deploy). "false": senza token dà un avviso
+      e non configura nulla (CI, dove il token manca per esempio sulle PR di Dependabot)
+    required: false
+    default: "false"
 
 runs:
   using: composite
   steps:
-    - name: Configure git authentication for private npm dependencies
-      if: ${{ inputs.token != '' }}
+    - name: Configure git and Composer authentication for private dependencies
       shell: bash
       env:
         TOKEN: ${{ inputs.token }}
+        REQUIRED: ${{ inputs.required }}
       run: |
+        if [ -z "$TOKEN" ]; then
+          if [ "$REQUIRED" = "true" ]; then
+            echo "::error title=Token mancante::Il token per le dipendenze private è vuoto: imposta il secret GH_TOKEN."
+            exit 1
+          fi
+          echo "::warning title=Token mancante::Token per le dipendenze private assente: i pacchetti privati dell'organizzazione non saranno scaricabili."
+          exit 0
+        fi
+
         # actions/checkout installs a repository-scoped credential, in recent versions
         # through a config file pulled in via includeIf. It wins over anything we add and
-        # cannot read other private repositories, so npm fails on a private dependency.
+        # cannot read other private repositories, so git fails on a private dependency.
         # Drop it and authenticate with the token, which spans the organisation and still
-        # allows pushing. npm also normalises GitHub URLs to ssh, hence the second rule.
-        for key in $(git config --local --name-only --get-regexp '^includeif\.' || true); do
+        # allows pushing.
+        for key in $(git config --local --name-only --get-regexp '^includeif\.' 2>/dev/null || true); do
           git config --local --unset-all "$key" || true
         done
-        git config --local --unset-all http."https://github.com/".extraheader || true
-        git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
-        git config --global --add url."https://x-access-token:${TOKEN}@github.com/".insteadOf "ssh://git@github.com/"
+        git config --local --unset-all http."https://github.com/".extraheader 2>/dev/null || true
+
+        # Every way a GitHub dependency can be written: https, ssh (what npm normalises
+        # GitHub URLs to) and the short scp-like form. Unset first, so that running the
+        # action twice in a job does not pile up values.
+        token_url="https://x-access-token:${TOKEN}@github.com/"
+        git config --global --unset-all url."$token_url".insteadOf || true
+        git config --global --add url."$token_url".insteadOf "https://github.com/"
+        git config --global --add url."$token_url".insteadOf "ssh://git@github.com/"
+        git config --global --add url."$token_url".insteadOf "git@github.com:"
+
+        # Composer downloads dist archives through the API, not through git.
+        if command -v composer >/dev/null 2>&1; then
+          composer config --global --auth github-oauth.github.com "$TOKEN"
+        fi
