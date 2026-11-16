@@ -88,14 +88,6 @@ jobs:
           node-version: ${{ inputs.node-version }}
           cache: npm
 
-      - name: Configure git authentication for private npm dependencies
-        uses: ITinternalDiMartino/ci-workflows/.github/actions/private-deps-auth@main
-        with:
-          token: ${{ secrets.GH_TOKEN }}
-
-      - name: Install Node Dependencies
-        run: npm ci
-
       - name: Cache Composer dependencies
         uses: actions/cache@v6
         with:
@@ -112,8 +104,13 @@ jobs:
           extensions: json, dom, curl, libxml, mbstring, pdo_mysql, pdo_pgsql
           ini-values: memory_limit=512M, max_execution_time=180, display_errors=On
 
-      - name: Configure Composer Authentication
-        run: composer config --global --auth github-oauth.github.com ${{ secrets.GH_TOKEN }}
+      - name: Configure authentication for private dependencies
+        uses: ITinternalDiMartino/ci-workflows/.github/actions/private-deps-auth@main
+        with:
+          token: ${{ secrets.GH_TOKEN }}
+
+      - name: Install Node Dependencies
+        run: npm ci
 
       - name: Install PHP Dependencies
         run: composer install --no-interaction --prefer-dist --no-progress

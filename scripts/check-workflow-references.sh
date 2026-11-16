@@ -42,21 +42,27 @@ extract() {
 }
 
 # gh api con fino a 3 tentativi: GitHub risponde a volte con un errore 5xx temporaneo,
-# che col controllo obbligatorio bloccherebbe le PR.
+# che col controllo obbligatorio bloccherebbe le PR. L'uscita di ogni tentativo resta a
+# parte: gh stampa su stdout anche il corpo della risposta d'errore, che altrimenti si
+# sommerebbe a quella buona.
 gh_api_retry() {
-  local attempt
+  local attempt out
   for attempt in 1 2 3; do
-    gh api "$@" && return 0
+    if out="$(gh api "$@")"; then
+      printf '%s\n' "$out"
+      return 0
+    fi
     [ "$attempt" -lt 3 ] && sleep $((attempt * 5))
   done
   return 1
 }
 
-# Repository dell'organizzazione, 50 per pagina.
+# Repository dell'organizzazione, 20 per pagina: ogni pagina porta il testo di tutti i
+# loro workflow, e le pagine grandi fanno scadere la GraphQL con un 502.
 # shellcheck disable=SC2016 # le variabili sono di GraphQL, non della shell
 query='query($org: String!, $after: String) {
   organization(login: $org) {
-    repositories(first: 50, after: $after) {
+    repositories(first: 20, after: $after) {
       pageInfo { hasNextPage endCursor }
       nodes {
         name

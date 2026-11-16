@@ -65,8 +65,10 @@ jobs:
           echo "::add-matcher::${{ runner.tool_cache }}/php.json"
           echo "::add-matcher::${{ runner.tool_cache }}/phpunit.json"
 
-      - name: Configure Composer Authentication
-        run: composer config --global --auth github-oauth.github.com ${{ secrets.GH_TOKEN }}
+      - name: Configure authentication for private dependencies
+        uses: ITinternalDiMartino/ci-workflows/.github/actions/private-deps-auth@main
+        with:
+          token: ${{ secrets.GH_TOKEN }}
 
       - name: Install dependencies
         env:
