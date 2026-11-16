@@ -23,7 +23,7 @@ name: Deploy
 #   <RELEASES_PATH>/<release>/   una directory per release, create da qui
 #   <SHARED_PATH>/.env           configurazione persistente fra le release
 #   <SHARED_PATH>/storage/       storage persistente fra le release
-#   <CURRENT_PATH>               symlink alla release attiva (document root)
+#   <CURRENT_PATH>               symlink alla release attiva; document root: <CURRENT_PATH>/public
 #   <TMP_PATH>/                  area di transito per l'archivio
 #
 # Il layout lo prepara scripts/setup-releases.sh, anche migrando un sito già in
@@ -70,7 +70,7 @@ on:
         default: "npm run build"
         type: string
       releases-keep:
-        description: "Numero di release da conservare sul server, oltre a quella attiva"
+        description: "Numero di release da conservare sul server, compresa quella attiva (minimo utile: 1)"
         required: false
         default: 5
         type: number
