@@ -50,7 +50,7 @@ ognuna è un comando a sé.
 
 | opzione | quando serve | default |
 |---|---|---|
-| `--url https://dominio.it` | se `APP_URL` nel `.env` non è l'indirizzo pubblico del sito (es. `http://localhost`), oppure in `--new` prima che il `.env` esista | `APP_URL` del `.env` |
+| `--url https://dominio.it` | se `APP_URL` nel `.env` non è l'indirizzo pubblico del sito (es. `http://localhost`), oppure in `--new` prima che il `.env` esista. Un `APP_URL` in `http://` su un dominio che reindirizza allo stesso indirizzo in `https://` non serve correggerlo: le sonde passano da sole a `https://` | `APP_URL` del `.env` |
 | `--php-bin /opt/cpanel/ea-php84/root/usr/bin/php` | in `recon`, per verificare un `PHP_BIN` preciso, o quando `recon` dice che non riesce a determinarlo | il PHP del dominio |
 | `--health-path /login` | se la home risponde 4xx anche con il sito sano (es. protetta da password): va indicata una pagina che risponde 2xx o 3xx | `/` |
 | `--timeout 300` | se la sonda di `legacy` o `cleanup` scade prima che PHP veda la release | `150` secondi |
