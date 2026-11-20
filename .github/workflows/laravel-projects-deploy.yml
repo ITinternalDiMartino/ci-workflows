@@ -13,19 +13,42 @@ name: Deploy
 # uno schema o a dati che non conosce. In quel caso il run lo dice e si ferma.
 # Il riepilogo stampa comunque il comando per rifare lo swap a mano.
 #
-# Smoke test: per default misura dal runner, che attraversa anche CDN e
+# Smoke test: la release è in linea solo quando a servire il suo marcatore è
+# PHP. Il marcatore è un file PHP con un nome fisso da sonda
+# (/__probe-release.php) che stampa il nome della release: viene scritto nella
+# public/ della release nuova solo per la durata dello smoke test e rimosso alla
+# fine, anche se fallisce o viene interrotto. Un file statico non basterebbe: il
+# web server lo serve appena current cambia, mentre PHP continua a risolvere
+# current nella release precedente finché la sua realpath cache non scade (120s
+# di default), e health path e home misurerebbero il codice vecchio. Fino ad
+# allora il marcatore risponde 404, che è sempre attesa.
+#
+# Per default lo smoke test misura dal runner, che attraversa anche CDN e
 # protezioni davanti al server. Dove una protezione anti-bot sfida gli IP dei
 # runner, smoke-from 'server' sposta la misura sulla connessione SSH già
 # aperta. I verdetti possono essere delegati a uno script del repository
 # chiamante (input decisions-script), per tenerli sotto test nella sua suite;
 # con smoke-from 'server' lo script viene copiato sul server per la durata
 # dello smoke test, perché gira accanto al module. Lo smoke test è il module
-# scripts/release-smoke-test.sh, lo stesso per entrambe le modalità: un 404 o
-# una risposta assente sul marcatore sono sempre attesa e non arrivano mai al
-# decisions-script. Con APP_URL in http:// su un dominio che forza HTTPS il
-# module passa a https:// (stesso host, stesso percorso) e lo segnala; con
-# smoke-from 'server' ogni altro redirect del marcatore ferma subito lo smoke
-# test con l'esito redirect. L'output url riporta l'URL usato davvero.
+# scripts/release-smoke-test.sh, lo stesso per entrambe le modalità.
+#
+# Verdetti sul marcatore, un insieme chiuso:
+#   match         la Release attesa è in linea: si passa a health path e home
+#   mismatch      risponde un'altra Release: si ritenta fino a smoke-timeout
+#   no-response   404, risposta assente o corpo vuoto: si ritenta
+#   challenged    una protezione anti-bot risponde al posto del marcatore (403
+#                 o 503 con pagina di challenge): ci si ferma subito, e da
+#                 'runner' conviene provare smoke-from 'server'
+#   html-page     una pagina HTML servita con 200: il vhost non serve la
+#                 Release, ci si ferma subito
+#   redirect      in modalità server, un redirect che non si può seguire: ci si
+#                 ferma subito con il codice HTTP
+# Regola "404 = attesa": un 404 o una risposta assente sono sempre attesa e il
+# decisions-script non li riceve mai; gli viene chiesto un verdetto solo sulle
+# altre risposte, e quando c'è decide al posto del default.
+# Con APP_URL in http:// su un dominio che forza HTTPS, in entrambe le modalità
+# il module passa a https:// (stesso host, stesso percorso) e lo segnala:
+# l'output url riporta l'URL usato davvero.
 #
 # Layout atteso sul server:
 #   <RELEASES_PATH>/<release>/   una directory per release, create da qui
@@ -129,10 +152,11 @@ on:
         type: string
       smoke-timeout:
         description: >-
-          Secondi di attesa perché il marcatore della release nuova compaia via
-          HTTP. Copre la cache dei path del web server, il cui default PHP è
-          120s: con smoke-from 'server' non c'è nessuna sfida da attendere e un
-          valore più basso è sufficiente
+          Secondi di attesa perché PHP serva il marcatore della release nuova.
+          Copre la realpath cache di PHP, che per default risolve current nella
+          release precedente fino a 120s dopo lo swap: il default di 150s la
+          copre per intero, e un valore più basso della cache può far fallire
+          un deploy sano
         required: false
         default: 150
         type: number
@@ -140,8 +164,12 @@ on:
         description: >-
           Percorso, nel repository chiamante, di uno script che decide i
           verdetti dello smoke test ('smoke-marker' e 'smoke-health'). Se
-          vuoto, il confronto lo fa questo workflow. Serve ai progetti che
-          vogliono quelle decisioni sotto test nella propria suite
+          vuoto, decide il default di questo workflow. I verdetti sul
+          marcatore sono match, mismatch, no-response, challenged, html-page e
+          redirect. Regola "404 = attesa": un 404 o una risposta assente sono
+          sempre attesa e non arrivano mai allo script, interpellato solo
+          sulle altre risposte. Serve ai progetti che vogliono quelle
+          decisioni sotto test nella propria suite
         required: false
         default: ""
         type: string
@@ -652,11 +680,6 @@ jobs:
           # -f segue il symlink: verifica che .env sia collegato e leggibile
           [ -f "$REL/.env" ] || { echo "la release non ha .env collegato"; exit 1; }
 
-          # marcatore servito via HTTP: è l'unico modo di sapere *quale* release
-          # sta rispondendo, e quindi di aspettare la realpath cache invece di
-          # sperare che sia già scaduta
-          basename "$REL" > "$REL/public/release.txt"
-
           # ln -sfn cancella e ricrea: per un istante current non esiste. Con un
           # symlink temporaneo più mv -T lo scambio è una rename(2), atomica.
           ln -sfn "$REL" "$CUR.new"
@@ -702,6 +725,7 @@ jobs:
         with:
           url: ${{ steps.appurl.outputs.url }}
           release: ${{ env.RELEASE }}
+          marker-dir: ${{ env.RELEASES_PATH }}/${{ env.RELEASE }}/public
           health-path: ${{ inputs.health-path }}
           smoke-from: ${{ inputs.smoke-from }}
           smoke-timeout: ${{ inputs.smoke-timeout }}

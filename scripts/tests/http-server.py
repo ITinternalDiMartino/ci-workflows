@@ -7,6 +7,12 @@ richiesta; l'ultima si ripete. Ogni risposta è un oggetto:
 
     {"status": 200, "body": "testo", "headers": {"Location": "..."}}
     {"drop": true}       chiude la connessione senza rispondere (curl: 000)
+    {"php": "/percorso/file.php"}
+                         serve il file come farebbe PHP: 404 se non esiste (la
+                         realpath cache punta ancora alla Release precedente),
+                         altrimenti il suo output. Del PHP è emulato solo il
+                         costrutto del marcatore, <?php echo '...'; e qualunque
+                         altro contenuto risponde 500
 
 Nei valori delle intestazioni, {port} diventa la porta del server.
 
@@ -22,6 +28,7 @@ HTTPS hanno lo stesso prefisso "https ".
 
 import json
 import os
+import re
 import socket
 import ssl
 import sys
@@ -39,6 +46,21 @@ with open(routes_file, encoding="utf-8") as f:
 
 served = {}
 
+# una stringa PHP fra apici singoli: \\ e \' sono le uniche sequenze di escape
+PHP_ECHO = re.compile(r"<\?php echo '((?:[^'\\]|\\.)*)';\s*\Z")
+
+
+def run_php(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            source = f.read()
+    except FileNotFoundError:
+        return {"status": 404, "body": "File not found."}
+    found = PHP_ECHO.match(source)
+    if not found:
+        return {"status": 500, "body": "PHP non emulato: " + source}
+    return {"status": 200, "body": re.sub(r"\\([\\'])", r"\1", found.group(1))}
+
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -55,6 +77,9 @@ class Handler(BaseHTTPRequestHandler):
             index = served.get(key, 0)
             response = sequence[min(index, len(sequence) - 1)]
             served[key] = index + 1
+
+        if "php" in response:
+            response = run_php(response["php"])
 
         if response.get("drop"):
             self.connection.shutdown(socket.SHUT_RDWR)

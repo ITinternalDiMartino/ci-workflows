@@ -1,7 +1,14 @@
 #!/bin/sh
 # Smoke test della Release: risponde alla domanda "la Release nuova è davvero in
-# linea?". Aspetta che il sito serva il marcatore della Release attesa, classifica
+# linea?". Aspetta che PHP serva il marcatore della Release attesa, classifica
 # ogni risposta in un verdetto, poi controlla health path e home.
+#
+# Il marcatore è un file PHP con un nome fisso da sonda, /__probe-release.php,
+# che stampa il nome della Release. Esiste solo dentro la public/ della Release
+# nuova: finché la realpath cache di PHP (default 120s) risolve current nella
+# Release precedente il file non c'è e la risposta è un 404. Un file statico non
+# basterebbe: il web server lo servirebbe appena current cambia, e health path e
+# home misurerebbero ancora il codice vecchio.
 #
 # È POSIX sh, senza bash: sul server cPanel la shell non interattiva è minima.
 # Si usa in due modi, con lo stesso interface:
@@ -22,16 +29,25 @@
 #                          seguito, come con smoke-from 'server' (default: follow)
 #   --decisions PERCORSO   decisions-script che decide i verdetti al posto del
 #                          default (contratto sotto)
+#   --marker-dir DIR       la public/ della Release, quando il module gira dove
+#                          c'è il suo filesystem: il module scrive il marcatore
+#                          in DIR e lo rimuove all'uscita, anche se fallisce o
+#                          viene interrotto (INT, TERM, HUP, PIPE). Senza, il
+#                          marcatore lo scrive e lo rimuove il chiamante con
+#                          release_smoke_marker (sotto)
 #   --github               errori come annotazioni di GitHub Actions (::error::)
 #
 # Verdetti sul marcatore. Un 404 o una risposta assente (codice 000) sono sempre
 # attesa, con verdetto no-response, e non arrivano mai al decisions-script: il
 # 404 è la pagina della Release precedente mentre la cache si aggiorna. Le altre
-# risposte le classifica il default o il decisions-script:
+# risposte le classifica il decisions-script, se c'è, altrimenti il default:
 #   match                  la Release attesa è in linea: si passa alla salute
 #   mismatch, no-response  si ritenta fino al timeout
 #   challenged, html-page  definitivi: aspettare non li sistema
 #   qualunque altro        si ritenta, come mismatch
+# Il default dà challenged a un 403 o 503 con una pagina di challenge (firme in
+# pagina_di_challenge), html-page a una pagina HTML servita con 200, match o
+# mismatch confrontando il corpo con la Release, no-response a un corpo vuoto.
 #
 # Redirect sul marcatore. Se --url è in http:// e il marcatore redirige allo
 # stesso host e allo stesso percorso in https://, il module passa a https://
@@ -49,14 +65,36 @@
 #                                                esce non zero e stampa cosa è fallito
 #
 # Uscita: l'ultima riga è "release-smoke-test: <esito>", con esito fra online,
-# timeout, challenged, html-page, redirect, unhealthy, unavailable (manca curl),
-# usage.
-# Exit code 0 solo con online, 2 per un uso sbagliato, 1 altrimenti.
+# timeout, challenged, html-page, redirect, unhealthy, unavailable (manca curl o
+# il marcatore non si può scrivere), usage. Exit code 0 solo con online, 2 per
+# un uso sbagliato, 1 altrimenti.
+#
+# Il marcatore, per chi lo gestisce da fuori (il deploy con smoke-from 'runner',
+# via SSH). Nome e contenuto del file stanno solo qui:
+#   release_smoke_marker scrivi DIR RELEASE   scrive DIR/__probe-release.php
+#   release_smoke_marker rimuovi DIR          lo rimuove, se c'è
+# Un sottocomando sconosciuto esce con 2.
+
+# il nome del file, che è anche il percorso servito sotto l'URL del sito
+RELEASE_SMOKE_MARKER='__probe-release.php'
+
+release_smoke_marker() (
+  file="$2/$RELEASE_SMOKE_MARKER"
+  case "$1" in
+    scrivi)
+      # il nome finisce in una stringa PHP fra apici singoli
+      nome="$(printf '%s' "$3" | sed "s/[\\\\']/\\\\&/g")"
+      printf "<?php echo '%s';\n" "$nome" > "$file"
+      ;;
+    rimuovi) rm -f "$file" ;;
+    *) return 2 ;;
+  esac
+)
 
 # Il corpo è una subshell: variabili ed exit restano dentro la funzione, anche
 # quando a chiamarla è uno script concatenato.
 release_smoke_test() (
-  marker_path='/release.txt'
+  marker_path="/$RELEASE_SMOKE_MARKER"
   url=''
   release=''
   health_path='/up'
@@ -64,6 +102,7 @@ release_smoke_test() (
   interval=10
   redirects='follow'
   decisions=''
+  marker_dir=''
   github=''
 
   errore() {
@@ -99,7 +138,7 @@ release_smoke_test() (
         shift
         continue
         ;;
-      --url | --release | --health-path | --timeout | --interval | --redirects | --decisions)
+      --url | --release | --health-path | --timeout | --interval | --redirects | --decisions | --marker-dir)
         [ $# -ge 2 ] || uso "$1 vuole un valore"
         ;;
       *) uso "argomento sconosciuto: $1" ;;
@@ -112,6 +151,7 @@ release_smoke_test() (
       --interval) interval="$2" ;;
       --redirects) redirects="$2" ;;
       --decisions) decisions="$2" ;;
+      --marker-dir) marker_dir="$2" ;;
     esac
     shift 2
   done
@@ -127,12 +167,30 @@ release_smoke_test() (
     # senza una barra il nome verrebbe cercato nel PATH
     case "$decisions" in */*) ;; *) decisions="./$decisions" ;; esac
   fi
+  if [ -n "$marker_dir" ]; then
+    [ -d "$marker_dir" ] || uso "--marker-dir '$marker_dir' non è una directory"
+  fi
   if ! command -v curl > /dev/null 2>&1; then
     errore "manca curl: la misura ha bisogno di un client HTTP"
     esito unavailable
     exit 1
   fi
   url="${url%/}"
+
+  # Il marcatore non deve restare servito: si rimuove all'uscita, comunque vada.
+  # Una connessione SSH che cade arriva come SIGPIPE alla prima scrittura, quindi
+  # anche PIPE; nei gestori dei segnali niente output, che rischierebbe un altro
+  # SIGPIPE. Il corpo della funzione è una subshell: queste trap non toccano lo
+  # script a cui il module è concatenato.
+  if [ -n "$marker_dir" ]; then
+    trap 'release_smoke_marker rimuovi "$marker_dir"' EXIT
+    trap 'release_smoke_marker rimuovi "$marker_dir"; exit 130' INT TERM HUP PIPE
+    if ! release_smoke_marker scrivi "$marker_dir" "$release" 2> /dev/null; then
+      errore "non riesco a scrivere il marcatore in $marker_dir"
+      esito unavailable
+      exit 1
+    fi
+  fi
 
   # Imposta codice e corpo della risposta al marcatore. stderr di curl non va
   # silenziato: quando non si connette, la sua riga è l'unica diagnosi. Con -w
@@ -160,11 +218,40 @@ release_smoke_test() (
     echo "release-smoke-test-url: $url"
   }
 
+  # Firme delle pagine di challenge delle protezioni anti-bot più comuni, cercate
+  # senza distinguere maiuscole nel corpo di un 403 o 503:
+  #   Cloudflare      "Just a moment...", /cdn-cgi/challenge-platform/,
+  #                   "Attention Required! | Cloudflare"
+  #   Sucuri          "Sucuri WebSite Firewall"
+  #   Imperva         _Incapsula_Resource
+  #   Imunify360      "imunify360" (bot-protection dei cPanel)
+  #   DDoS-Guard      "ddos-guard"
+  pagina_di_challenge() {
+    printf '%s' "$corpo" | grep -qiE \
+      'just a moment\.\.\.|/cdn-cgi/challenge-platform/|attention required! \| cloudflare|sucuri website firewall|_incapsula_resource|imunify360|ddos-guard'
+  }
+
   classifica() {
     if [ -n "$decisions" ]; then
       printf '%s' "$corpo" | "$decisions" smoke-marker "$release" || true
       return
     fi
+    case "$codice" in
+      403 | 503)
+        if pagina_di_challenge; then
+          echo challenged
+          return
+        fi
+        ;;
+      # il marcatore è testo semplice: una pagina HTML con 200 è il vhost che
+      # serve altro, non una Release vecchia che sta per cambiare
+      200)
+        if printf '%s' "$corpo" | grep -qiE '<!doctype html|<(html|head|body)([[:space:]>]|$)'; then
+          echo html-page
+          return
+        fi
+        ;;
+    esac
     servita="$(printf '%s' "$corpo" | tr -d '[:space:]')"
     if [ -z "$servita" ]; then
       echo no-response
@@ -222,7 +309,7 @@ release_smoke_test() (
         exit 1
         ;;
       html-page)
-        errore "risponde una pagina HTML invece del marcatore: ${marker_path#/} non è servito su questo vhost"
+        errore "risponde una pagina HTML invece del marcatore: questo vhost non serve la Release ($url non punta alla public/ della Release, o ${marker_path#/} non c'è)"
         esito html-page
         exit 1
         ;;

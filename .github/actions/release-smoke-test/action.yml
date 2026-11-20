@@ -1,9 +1,11 @@
 name: Release smoke test
 description: >-
-  Waits until the site serves the marker of the given release, then checks the health
+  Waits until PHP serves the marker of the given release, then checks the health
   path and the home page, through the release smoke test module of ci-workflows
-  (scripts/release-smoke-test.sh). With smoke-from 'server' the module runs on the
-  server, over the SSH alias 'target' that the job has already configured.
+  (scripts/release-smoke-test.sh). The marker is a PHP file written into the
+  release's public/ for the duration of the smoke test and removed afterwards,
+  whatever the outcome. With smoke-from 'server' the module runs on the server,
+  over the SSH alias 'target' that the job has already configured.
 
 inputs:
   url:
@@ -11,6 +13,11 @@ inputs:
     required: true
   release:
     description: "Nome della release attesa nel marcatore"
+    required: true
+  marker-dir:
+    description: >-
+      Directory public/ della release sul server, raggiunta dall'alias SSH
+      'target': il marcatore PHP viene scritto lì e rimosso a fine smoke test
     required: true
   health-path:
     description: "Percorso che deve rispondere 200"
@@ -51,6 +58,7 @@ runs:
       env:
         URL: ${{ inputs.url }}
         RELEASE: ${{ inputs.release }}
+        MARKER_DIR: ${{ inputs.marker-dir }}
         HEALTH_PATH: ${{ inputs.health-path }}
         SMOKE_FROM: ${{ inputs.smoke-from }}
         SMOKE_TIMEOUT: ${{ inputs.smoke-timeout }}
@@ -79,12 +87,41 @@ runs:
           echo "url=${used:-$URL}" >> "$GITHUB_OUTPUT"
         }
 
+        # ssh unisce gli argomenti in una riga che la shell remota rilegge: ogni
+        # valore va fra apici singoli.
+        q() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
+
         if [ "$SMOKE_FROM" = "runner" ]; then
+          # Il module gira qui e non vede il filesystem del server: il marcatore
+          # lo scrive e lo rimuove questo step, sull'alias SSH, con la funzione
+          # del module che ne decide nome e contenuto. La rimozione gira anche se
+          # lo smoke test fallisce o lo step viene interrotto.
+          marcatore() {
+            { cat "$MODULE"; printf '%s\n' 'release_smoke_marker "$@"'; } |
+              ssh target "sh -s -- $(q "$1") $(q "$MARKER_DIR") $(q "$RELEASE")"
+          }
+          trap 'marcatore rimuovi || echo "::warning::non sono riuscito a rimuovere il marcatore da $MARKER_DIR"' EXIT
+          smoke=""
+          trap '[ -z "$smoke" ] || kill "$smoke" 2> /dev/null; exit 130' INT TERM HUP
+          marcatore scrivi
+
           args=(--url "$URL" --release "$RELEASE" --health-path "$HEALTH_PATH"
             --timeout "$SMOKE_TIMEOUT" --redirects follow --github)
           [ -z "$DECISIONS" ] || args+=(--decisions "$DECISIONS")
+          # In background più wait: con un comando in primo piano bash eseguirebbe
+          # la trap solo alla sua fine, e una cancellazione che arriva solo a
+          # questa shell lascerebbe il marcatore fino a smoke-timeout. wait invece
+          # si interrompe sul segnale. L'output passa da tee su un descrittore a
+          # parte, non in una pipe: così $! resta il module, che la trap uccide.
+          exec 3> >(tee "$LOG")
+          copia=$!
+          sh "$MODULE" "${args[@]}" >&3 &
+          smoke=$!
           rc=0
-          sh "$MODULE" "${args[@]}" | tee "$LOG" || rc=$?
+          wait "$smoke" || rc=$?
+          # tee finisce di scrivere il log solo quando il descrittore si chiude
+          exec 3>&-
+          wait "$copia" || true
           pubblica_url
           exit "$rc"
         fi
@@ -96,10 +133,6 @@ runs:
           echo "::error::sul server non c'è curl: con smoke-from 'server' la misura ha bisogno di un client HTTP sulla destinazione"
           exit 1
         fi
-
-        # ssh unisce gli argomenti in una riga che la shell remota rilegge: ogni
-        # valore va fra apici singoli.
-        q() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
 
         # Il decisions-script va dove gira il module. Nella home e non in /tmp,
         # che su cPanel è spesso montata noexec.
@@ -115,8 +148,12 @@ runs:
         # concatenato a setup-releases. Nessun redirect seguito: un redirect fuori
         # host riporterebbe la misura là da dove si è voluta spostare. Il module
         # passa da solo a https:// se il dominio lo forza, e ferma lo smoke test
-        # con l'esito redirect per ogni altro redirect del marcatore.
-        remote="sh -s -- --url $(q "$URL") --release $(q "$RELEASE") --health-path $(q "$HEALTH_PATH")"
+        # con l'esito redirect per ogni altro redirect del marcatore. Il
+        # marcatore lo scrive e lo rimuove il module, che sul server vede la
+        # Release; se la connessione cade, lo rimuove alla prima riga che non
+        # riesce più a scrivere.
+        remote="sh -s -- --url $(q "$URL") --release $(q "$RELEASE") --marker-dir $(q "$MARKER_DIR")"
+        remote="$remote --health-path $(q "$HEALTH_PATH")"
         remote="$remote --timeout $(q "$SMOKE_TIMEOUT") --redirects none --github"
         [ -z "$remote_decisions" ] || remote="$remote --decisions $(q "$remote_decisions")"
         rc=0
