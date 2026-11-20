@@ -360,5 +360,32 @@ non ha cancellato niente e si rilancia. Una fase su uno stato già completo dice
 - **Non cancella `current` se è una directory.**
 - **Non cancella `shared/000-legacy.tar.gz`.**
 - **Non crea dominio, database, chiave SSH né `deploy.yml`.**
-- **Nessuna suite di test**: `ci-workflows` non ne ha una, e lo script girerà una
-  manciata di volte. Il prezzo è pagato dalla loquacità di `recon`.
+- **Nessuna suite di test per `setup-releases.sh`**: lo script girerà una manciata
+  di volte, e il prezzo è pagato dalla loquacità di `recon`. La suite esiste invece
+  per lo smoke test della Release, che gira a ogni deploy di ogni progetto (vedi
+  sotto).
+
+# release-smoke-test.sh
+
+Il module di smoke test della Release: aspetta che il sito serva il marcatore
+della Release attesa, classifica ogni risposta in un verdetto, poi controlla
+health path e home. Il deploy lo usa attraverso la composite action
+`.github/actions/release-smoke-test`, sul runner (`smoke-from: runner`) o inviato
+al server sulla connessione SSH già aperta (`smoke-from: server`). Opzioni,
+verdetti e contratto del `decisions-script` sono descritti in testa allo script.
+
+È POSIX sh e si usa allo stesso modo come script o come funzione, quando arriva
+concatenato prima di un altro script su stdin:
+
+```sh
+sh scripts/release-smoke-test.sh --url https://dominio.it --release 20261120-101500-abc1234
+{ cat scripts/release-smoke-test.sh; echo 'release_smoke_test "$@"'; } | sh -s -- --url ... --release ...
+```
+
+La suite lo esercita solo dal suo interface, contro un server HTTP locale con
+risposte programmate, e gira in CI su ogni pull request (`check-workflows.yml`).
+In locale servono `python3` e `curl`:
+
+```sh
+scripts/tests/release-smoke-test.test.sh
+```
