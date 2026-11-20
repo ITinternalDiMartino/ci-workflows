@@ -75,7 +75,10 @@ case "$PORT" in '' | *[!0-9]*) [ -z "$PORT" ] || muori "--port vuole un numero" 
 
 QUI="$(cd "$(dirname "$0")" && pwd)"
 SETUP_RELEASES="$QUI/setup-releases.sh"
-[ -f "$SETUP_RELEASES" ] || muori "manca $SETUP_RELEASES: lo script va lanciato dal repository ci-workflows"
+SMOKE_MODULE="$QUI/release-smoke-test.sh"
+for f in "$SETUP_RELEASES" "$SMOKE_MODULE"; do
+  [ -f "$f" ] || muori "manca $f: lo script va lanciato dal repository ci-workflows"
+done
 
 for t in gh ssh ssh-keygen; do
   command -v "$t" > /dev/null 2>&1 || muori "manca $t"
@@ -181,7 +184,9 @@ say "connessione:  ok, come dal runner"
 
 V_ARGS=(vars "$BASE")
 [ -n "$PHP_OPT" ] && V_ARGS+=(--php-bin "$PHP_OPT")
-if ! "${RSSH[@]}" "sh -s -- ${V_ARGS[*]}" < "$SETUP_RELEASES" > "$LAVORO/vars" 2> "$LAVORO/vars.err"; then
+# setup-releases.sh arriva con il module dello smoke test concatenato prima, come
+# lo si lancia a mano
+if ! cat "$SMOKE_MODULE" "$SETUP_RELEASES" | "${RSSH[@]}" "sh -s -- ${V_ARGS[*]}" > "$LAVORO/vars" 2> "$LAVORO/vars.err"; then
   cat "$LAVORO/vars" "$LAVORO/vars.err" >&2
   muori "la fase vars di setup-releases.sh è fallita sul server"
 fi

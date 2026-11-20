@@ -20,13 +20,14 @@ Dal proprio computer, dalla cartella di questo repository, senza copiare niente
 sul server. Un esempio completo:
 
 ```sh
-ssh -p 2222 dominio@server.hosting.it 'sh -s' -- recon --from-existing /home/dominio/dominio.it < scripts/setup-releases.sh
+cat scripts/release-smoke-test.sh scripts/setup-releases.sh | ssh -p 2222 dominio@server.hosting.it 'sh -s' -- recon --from-existing /home/dominio/dominio.it
 ```
 
 Pezzo per pezzo:
 
 | pezzo | cosa scrivere | nell'esempio |
 |---|---|---|
+| `cat scripts/release-smoke-test.sh scripts/setup-releases.sh \|` | sempre uguale: manda al server il module dello smoke test della Release e, subito dopo, lo script. `legacy` e `cleanup` verificano la release con lo stesso smoke test del deploy. I percorsi sono relativi alla cartella da cui lanci il comando | |
 | `ssh -p 2222` | la porta SSH del server; `-p` si omette se è la 22 | `2222` |
 | `dominio@server.hosting.it` | utente cPanel del dominio e host SSH: gli stessi che andranno nei secret `SSH_USER` e `SSH_HOST` | |
 | `'sh -s' --` | sempre uguale, fra apici: dice al server di eseguire lo script che arriva da stdin, passandogli gli argomenti che seguono | |
@@ -34,7 +35,9 @@ Pezzo per pezzo:
 | modalità | `--from-existing` se sul dominio c'è già il sito in linea da migrare, `--new` se il dominio è appena creato e vuoto | `--from-existing` |
 | BASE | la cartella del dominio, percorso assoluto: quella che **contiene** `artisan` nel sito piatto, o quella in cui cPanel ha creato `current/` su un dominio nuovo. Non `public/`, non `current/` | `/home/dominio/dominio.it` |
 | opzioni | facoltative, vedi la tabella qui sotto; vanno dopo BASE | nessuna |
-| `< scripts/setup-releases.sh` | sempre uguale: è lo script che viene mandato al server. Il percorso è relativo alla cartella da cui lanci il comando | |
+
+Lanciato senza il module, con il vecchio `... < scripts/setup-releases.sh`, lo
+script si ferma subito, prima di toccare qualunque cosa, e stampa il comando giusto.
 
 Per trovare BASE: dal pannello cPanel, **Domini**, la colonna del document root.
 Se il document root è `/home/dominio/dominio.it/public`, BASE è
@@ -52,12 +55,12 @@ ognuna è un comando a sé.
 |---|---|---|
 | `--url https://dominio.it` | se `APP_URL` nel `.env` non è l'indirizzo pubblico del sito (es. `http://localhost`), oppure in `--new` prima che il `.env` esista. Un `APP_URL` in `http://` su un dominio che reindirizza allo stesso indirizzo in `https://` non serve correggerlo: le sonde passano da sole a `https://` | `APP_URL` del `.env` |
 | `--php-bin /opt/cpanel/ea-php84/root/usr/bin/php` | in `recon`, per verificare un `PHP_BIN` preciso, o quando `recon` dice che non riesce a determinarlo | il PHP del dominio |
-| `--health-path /login` | se la home risponde 4xx anche con il sito sano (es. protetta da password): va indicata una pagina che risponde 2xx o 3xx | `/` |
-| `--timeout 300` | se la sonda di `legacy` o `cleanup` scade prima che PHP veda la release | `150` secondi |
+| `--health-path /login` | lo stesso `health-path` del `deploy.yml`, se non è `/up`. Il criterio è quello dello smoke test del deploy: l'health path deve rispondere 200 e la home sotto 400 | `/up` |
+| `--timeout 300` | se lo smoke test di `legacy` o `cleanup` scade prima che PHP veda la release | `150` secondi |
 | `--no-color` | se l'output va salvato in un file o incollato altrove | colori attivi |
 
 Un'opzione con valore si scrive con uno spazio in mezzo:
-`... cleanup --from-existing /home/dominio/dominio.it --url https://dominio.it --timeout 300 < scripts/setup-releases.sh`.
+`cat ... | ssh ... 'sh -s' -- cleanup --from-existing /home/dominio/dominio.it --url https://dominio.it --timeout 300`.
 
 ## Le due modalità
 
@@ -77,14 +80,14 @@ Con i valori dell'esempio sopra. Ogni riga si lancia quando la precedente è fin
 bene, e le righe con `#` sono passi da fare a mano:
 
 ```sh
-ssh -p 2222 dominio@server.hosting.it 'sh -s' -- recon   --from-existing /home/dominio/dominio.it < scripts/setup-releases.sh
-ssh -p 2222 dominio@server.hosting.it 'sh -s' -- bridge  --from-existing /home/dominio/dominio.it < scripts/setup-releases.sh
+cat scripts/release-smoke-test.sh scripts/setup-releases.sh | ssh -p 2222 dominio@server.hosting.it 'sh -s' -- recon   --from-existing /home/dominio/dominio.it
+cat scripts/release-smoke-test.sh scripts/setup-releases.sh | ssh -p 2222 dominio@server.hosting.it 'sh -s' -- bridge  --from-existing /home/dominio/dominio.it
 # pannello cPanel: document root del dominio -> /home/dominio/dominio.it/current/public
-ssh -p 2222 dominio@server.hosting.it 'sh -s' -- shared  --from-existing /home/dominio/dominio.it < scripts/setup-releases.sh
-ssh -p 2222 dominio@server.hosting.it 'sh -s' -- legacy  --from-existing /home/dominio/dominio.it < scripts/setup-releases.sh
-ssh -p 2222 dominio@server.hosting.it 'sh -s' -- cleanup --from-existing /home/dominio/dominio.it < scripts/setup-releases.sh
+cat scripts/release-smoke-test.sh scripts/setup-releases.sh | ssh -p 2222 dominio@server.hosting.it 'sh -s' -- shared  --from-existing /home/dominio/dominio.it
+cat scripts/release-smoke-test.sh scripts/setup-releases.sh | ssh -p 2222 dominio@server.hosting.it 'sh -s' -- legacy  --from-existing /home/dominio/dominio.it
+cat scripts/release-smoke-test.sh scripts/setup-releases.sh | ssh -p 2222 dominio@server.hosting.it 'sh -s' -- cleanup --from-existing /home/dominio/dominio.it
 # pannello cPanel: cron su /home/dominio/dominio.it/current/artisan
-ssh -p 2222 dominio@server.hosting.it 'sh -s' -- recon   --from-existing /home/dominio/dominio.it < scripts/setup-releases.sh
+cat scripts/release-smoke-test.sh scripts/setup-releases.sh | ssh -p 2222 dominio@server.hosting.it 'sh -s' -- recon   --from-existing /home/dominio/dominio.it
 # ripetere recon finché non dice "pronto per il primo deploy: sì"
 # Environment GitHub: scripts/setup-environment.sh (vedi sotto)
 # poi il primo deploy, sullo stesso commit già in produzione
@@ -113,10 +116,10 @@ che passa per un symlink (verificato nella migrazione a mano del 24 settembre
 ## Dominio nuovo
 
 ```sh
-ssh -p 2222 nuovo@server.hosting.it 'sh -s' -- recon  --new /home/nuovo/nuovo.it < scripts/setup-releases.sh
-ssh -p 2222 nuovo@server.hosting.it 'sh -s' -- shared --new /home/nuovo/nuovo.it < scripts/setup-releases.sh
+cat scripts/release-smoke-test.sh scripts/setup-releases.sh | ssh -p 2222 nuovo@server.hosting.it 'sh -s' -- recon  --new /home/nuovo/nuovo.it
+cat scripts/release-smoke-test.sh scripts/setup-releases.sh | ssh -p 2222 nuovo@server.hosting.it 'sh -s' -- shared --new /home/nuovo/nuovo.it
 # compilare a mano /home/nuovo/nuovo.it/shared/.env, con APP_KEY, e chmod 600
-ssh -p 2222 nuovo@server.hosting.it 'sh -s' -- recon  --new /home/nuovo/nuovo.it < scripts/setup-releases.sh
+cat scripts/release-smoke-test.sh scripts/setup-releases.sh | ssh -p 2222 nuovo@server.hosting.it 'sh -s' -- recon  --new /home/nuovo/nuovo.it
 # ripetere recon finché non dice "pronto per il primo deploy: sì"
 # Environment GitHub: scripts/setup-environment.sh (vedi sotto)
 ```
@@ -243,14 +246,15 @@ niente:
    release punterebbe a `releases/000-legacy/shared/.env`;
 4. sposta `current` su `releases/000-legacy` con lo stesso `ln -sfn` + `mv -Tf` del
    deploy;
-5. interroga il sito. Se non risponde, **riporta `current` su `$BASE` da solo** e si
-   ferma. Non ha cancellato niente, e la fase si rilancia: riparte dal passo 3.
+5. lancia lo smoke test del deploy sulla copia. Se non è verde, **riporta `current`
+   su `$BASE` da solo** e si ferma. Non ha cancellato niente, e la fase si rilancia:
+   riparte dal passo 3.
 
-Prima di cominciare controlla che il sito risponda già, e che ci sia spazio per
-archivio e copia.
+Prima di cominciare controlla che il sito sia già sano, con il criterio dello smoke
+test, e che ci sia spazio per archivio e copia.
 
 **`cleanup`** cancella dalla home i file originali. Gira solo se `current` risolve
-in `releases/000-legacy` e la sonda è verde. Cancella solo le voci che sono
+in `releases/000-legacy` e lo smoke test è verde. Cancella solo le voci che sono
 nell'archivio e che la copia contiene: quello che è comparso in `$BASE` dopo
 l'archivio resta dov'è ed è elencato. `shared/000-legacy.tar.gz` non lo tocca.
 
@@ -318,14 +322,18 @@ web. Scrive due sonde con token diversi e le chiede al dominio:
 
 Le sonde vengono cancellate subito dopo, e comunque all'uscita.
 
-**Release, in `legacy` e `cleanup`.** Un file PHP che esiste solo dentro
-`releases/000-legacy/public`. Dopo lo swap la realpath cache di PHP (120s di
-default) può ancora risolvere `current` in `$BASE`, dove i file vecchi sono intatti:
-senza aspettare quel token il sito risponderebbe verde anche con la copia rotta.
-L'attesa normale è un 404, il file che nel posto vecchio non c'è: qualunque altra
-risposta senza token (403, 5xx, redirect, nessuna connessione) non si sistema
-aspettando, e `legacy` ripristina subito invece di lasciare il sito in errore fino
-al timeout. Tornato il token, `--health-path` deve rispondere 2xx o 3xx.
+**Release, in `legacy` e `cleanup`.** È lo smoke test del deploy con
+`smoke-from: server`, dal module concatenato prima dello script: un cutover verde
+vede quello che vedrà il primo deploy. Il marcatore PHP esiste solo dentro
+`releases/000-legacy/public`, e nel marcatore va un token. Dopo lo swap la
+realpath cache di PHP (120s di default) può ancora risolvere `current` in `$BASE`,
+dove i file vecchi sono intatti: senza aspettare il token il sito risponderebbe
+verde anche con la copia rotta. Il 404, il file che nel posto vecchio non c'è, è
+attesa. Sui verdetti che aspettare non sistema (`challenged`, `html-page`,
+`redirect`) lo smoke test si ferma subito e `legacy` ripristina `current` senza
+aspettare il timeout. Su 403 senza pagina di challenge, 5xx o nessuna connessione,
+come nel deploy, aspetta fino a `--timeout` e poi ripristina. Tornato il token,
+l'health path deve rispondere 200 e la home sotto 400.
 
 ## PHP_BIN: mai `which php`
 
@@ -360,5 +368,58 @@ non ha cancellato niente e si rilancia. Una fase su uno stato già completo dice
 - **Non cancella `current` se è una directory.**
 - **Non cancella `shared/000-legacy.tar.gz`.**
 - **Non crea dominio, database, chiave SSH né `deploy.yml`.**
-- **Nessuna suite di test**: `ci-workflows` non ne ha una, e lo script girerà una
-  manciata di volte. Il prezzo è pagato dalla loquacità di `recon`.
+- **Nessuna suite di test per `setup-releases.sh`**: lo script girerà una manciata
+  di volte, e il prezzo è pagato dalla loquacità di `recon`. La suite esiste invece
+  per lo smoke test della Release, che gira a ogni deploy di ogni progetto (vedi
+  sotto).
+
+# release-smoke-test.sh
+
+Il module di smoke test della Release: aspetta che PHP serva il marcatore della
+Release attesa, classifica ogni risposta in un verdetto, poi controlla health
+path e home. Il marcatore è un file PHP, `/__probe-release.php`, che stampa il nome
+della Release: finché la realpath cache di PHP risolve `current` nella Release
+precedente risponde 404, e lo smoke test aspetta. Il marcatore lo scrive e lo
+rimuove solo il module, con due adapter: con `--marker-dir` nel filesystem dove
+gira, con `--marker-dir` e `--marker-host` sul server, inviandosi via ssh. Lo
+rimuove anche se lo smoke test fallisce o viene interrotto, e `--remove-marker`
+fa soltanto la rimozione, per chi deve pulire dopo un `SIGKILL`. Il deploy lo usa
+attraverso la composite action `.github/actions/release-smoke-test`, sul runner
+(`smoke-from: runner`, con `--marker-host target`) o inviato al server sulla
+connessione SSH già aperta (`smoke-from: server`); in entrambi i casi uno step
+finale dell'action esegue `--remove-marker` come rete di sicurezza. Opzioni,
+verdetti, redirect e contratto del `decisions-script` sono descritti in testa
+allo script. Come le sonde di `setup-releases.sh`, se `APP_URL` è in `http://` e
+il dominio forza HTTPS verso lo stesso host e percorso, il module passa a
+`https://` e consiglia di aggiornare `APP_URL`, in entrambe le modalità. Con
+`smoke-from: server` ogni altro redirect del marcatore ferma lo smoke test con
+l'esito `redirect`. L'action espone l'URL usato davvero come output `url`: sul
+runner lo scrive il module in `GITHUB_OUTPUT` (`--github`), dal server lo legge
+l'action nel log.
+
+Lo usa anche `setup-releases.sh`, che arriva al server concatenato dopo il
+module: `legacy` e `cleanup` chiamano `release_smoke_test`, e le sonde del document
+root usano le funzioni pubbliche del module per le richieste HTTP e per il
+passaggio a https. Nomi e contratti delle funzioni pubbliche
+(`release_smoke_risposta`, `release_smoke_codice`,
+`release_smoke_https`, `release_smoke_salute`) sono in testa allo script.
+
+È POSIX sh e si usa allo stesso modo come script o come funzione, quando arriva
+concatenato prima di un altro script su stdin:
+
+```sh
+sh scripts/release-smoke-test.sh --url https://dominio.it --release 20261120-101500-abc1234
+{ cat scripts/release-smoke-test.sh; echo 'release_smoke_test "$@"'; } | sh -s -- --url ... --release ...
+# dal proprio computer, con il marcatore sul server (solo come script)
+sh scripts/release-smoke-test.sh --url ... --release ... --marker-dir /home/utente/releases/<release>/public --marker-host utente@host
+```
+
+La suite lo esercita solo dal suo interface, contro un server HTTP locale con
+risposte programmate e un `ssh` finto che esegue in locale il comando remoto, e
+gira in CI su ogni pull request (`check-workflows.yml`).
+In locale servono `python3`, `curl` e `openssl` (per il certificato con cui il
+server di test risponde anche in HTTPS):
+
+```sh
+scripts/tests/release-smoke-test.test.sh
+```

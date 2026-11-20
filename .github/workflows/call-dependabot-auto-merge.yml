@@ -8,4 +8,4 @@ permissions:
 
 jobs:
   dependabot:
-    uses: ITinternalDiMartino/ci-workflows/.github/workflows/dependabot-auto-merge.yml@main
+    uses: ITinternalDiMartino/ci-workflows/.github/workflows/dependabot-auto-merge.yml@main-v2

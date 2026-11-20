@@ -1,0 +1,146 @@
+name: Release smoke test
+description: >-
+  Waits until PHP serves the marker of the given release, then checks the health
+  path and the home page, through the release smoke test module of ci-workflows
+  (scripts/release-smoke-test.sh). The marker is a PHP file written into the
+  release's public/ for the duration of the smoke test and removed afterwards,
+  whatever the outcome: the module writes and removes it in both modes, over
+  the SSH alias 'target' that the job has already configured, and a last step
+  removes it again in case the module was killed. With smoke-from 'server' the
+  module itself runs on the server, over the same alias.
+
+inputs:
+  url:
+    description: "URL base del sito, già risolto (APP_URL)"
+    required: true
+  release:
+    description: "Nome della release attesa nel marcatore"
+    required: true
+  marker-dir:
+    description: >-
+      Directory public/ della release sul server, raggiunta dall'alias SSH
+      'target': il marcatore PHP viene scritto lì e rimosso a fine smoke test
+    required: true
+  health-path:
+    description: "Percorso che deve rispondere 200"
+    required: false
+    default: "/up"
+  smoke-from:
+    description: >-
+      'runner': il module gira qui e segue i redirect di health path e home.
+      'server': il module viene inviato al server sull'alias SSH 'target' e non
+      segue redirect
+    required: false
+    default: "runner"
+  smoke-timeout:
+    description: "Secondi di attesa perché il marcatore della release compaia"
+    required: false
+    default: "150"
+  decisions-script:
+    description: >-
+      Percorso, nel workspace, dello script che decide i verdetti
+      ('smoke-marker' e 'smoke-health'). Con smoke-from 'server' viene copiato
+      sul server per la durata dello smoke test
+    required: false
+    default: ""
+
+outputs:
+  url:
+    description: >-
+      URL usato davvero dallo smoke test: quello di 'url', oppure la sua versione
+      https:// se il dominio forza HTTPS
+    value: ${{ steps.smoke.outputs.url }}
+
+runs:
+  using: composite
+  steps:
+    - name: Smoke test
+      id: smoke
+      shell: bash
+      env:
+        URL: ${{ inputs.url }}
+        RELEASE: ${{ inputs.release }}
+        MARKER_DIR: ${{ inputs.marker-dir }}
+        HEALTH_PATH: ${{ inputs.health-path }}
+        SMOKE_FROM: ${{ inputs.smoke-from }}
+        SMOKE_TIMEOUT: ${{ inputs.smoke-timeout }}
+        DECISIONS: ${{ inputs.decisions-script }}
+      run: |
+        # Il runner scarica l'intero repository di un'action, non solo la sua
+        # cartella: il module arriva da ci-workflows, mai dal repository chiamante.
+        MODULE="$GITHUB_ACTION_PATH/../../../scripts/release-smoke-test.sh"
+
+        case "$SMOKE_FROM" in
+          runner | server) ;;
+          *)
+            echo "::error::smoke-from vale '$SMOKE_FROM': gli unici valori ammessi sono 'runner' e 'server'"
+            exit 1
+            ;;
+        esac
+        echo "misura da: $SMOKE_FROM · URL sotto test: $URL"
+
+        if [ "$SMOKE_FROM" = "runner" ]; then
+          # Il module gira qui e scrive e rimuove da sé il marcatore sul server,
+          # sull'alias SSH (--marker-host); con --github pubblica l'output url.
+          # exec: il module prende il posto di questa shell, così il segnale di
+          # un annullamento arriva direttamente a lui, che rimuove il marcatore.
+          args=(--url "$URL" --release "$RELEASE" --marker-dir "$MARKER_DIR"
+            --marker-host target --health-path "$HEALTH_PATH"
+            --timeout "$SMOKE_TIMEOUT" --redirects follow --github)
+          [ -z "$DECISIONS" ] || args+=(--decisions "$DECISIONS")
+          exec sh "$MODULE" "${args[@]}"
+        fi
+
+        # Sul server il module non vede GITHUB_OUTPUT: l'output url è l'URL usato
+        # davvero, che il module annuncia con una riga 'release-smoke-test-url:'
+        # quando il dominio forza HTTPS. Si scrive anche quando lo smoke test
+        # fallisce: il riepilogo lo mostra.
+        set -o pipefail
+        LOG="$RUNNER_TEMP/release-smoke-test.log"
+        pubblica_url() {
+          used="$(sed -n 's/^release-smoke-test-url: //p' "$LOG" | tail -n 1)"
+          echo "url=${used:-$URL}" >> "$GITHUB_OUTPUT"
+        }
+
+        # ssh unisce gli argomenti in una riga che la shell remota rilegge: ogni
+        # valore va fra apici singoli.
+        q() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
+
+        # Il decisions-script va dove gira il module. Nella home e non in /tmp,
+        # che su cPanel è spesso montata noexec.
+        remote_decisions=""
+        if [ -n "$DECISIONS" ]; then
+          remote_dir="$(ssh target 'mktemp -d "$HOME/.release-smoke-test.XXXXXX"')"
+          trap 'ssh target "rm -rf $(q "$remote_dir")" || true' EXIT
+          remote_decisions="$remote_dir/decisions"
+          ssh target "cat > $(q "$remote_decisions") && chmod +x $(q "$remote_decisions")" < "$DECISIONS"
+        fi
+
+        # Il module arriva su stdin e viene chiamato come funzione, come quando è
+        # concatenato a setup-releases. Nessun redirect seguito: un redirect fuori
+        # host riporterebbe la misura là da dove si è voluta spostare. Il module
+        # passa da solo a https:// se il dominio lo forza, e ferma lo smoke test
+        # con l'esito redirect per ogni altro redirect del marcatore. Il
+        # marcatore lo scrive e lo rimuove il module, che sul server vede la
+        # Release; se la connessione cade, lo rimuove alla prima riga che non
+        # riesce più a scrivere.
+        remote="sh -s -- --url $(q "$URL") --release $(q "$RELEASE") --marker-dir $(q "$MARKER_DIR")"
+        remote="$remote --health-path $(q "$HEALTH_PATH")"
+        remote="$remote --timeout $(q "$SMOKE_TIMEOUT") --redirects none --github"
+        [ -z "$remote_decisions" ] || remote="$remote --decisions $(q "$remote_decisions")"
+        rc=0
+        { cat "$MODULE"; printf '%s\n' 'release_smoke_test "$@"'; } | ssh target "$remote" | tee "$LOG" || rc=$?
+        pubblica_url
+        exit "$rc"
+
+    # Rete di sicurezza: le trap del module non bastano contro un SIGKILL, che
+    # arriva quando l'annullamento supera i pochi secondi concessi dal runner.
+    # La rimozione è ripetibile e non fa mai fallire lo step.
+    - name: Remove marker
+      if: always()
+      shell: bash
+      env:
+        MARKER_DIR: ${{ inputs.marker-dir }}
+      run: >-
+        sh "$GITHUB_ACTION_PATH/../../../scripts/release-smoke-test.sh"
+        --remove-marker --marker-dir "$MARKER_DIR" --marker-host target --github

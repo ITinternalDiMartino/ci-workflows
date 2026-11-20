@@ -2,7 +2,8 @@ name: Check workflows
 
 # Protegge i repository che chiamano i workflow di ci-workflows: actionlint trova
 # gli errori di sintassi ed espressione, check-workflow-references.sh trova i
-# riferimenti a workflow rinominati o cancellati.
+# riferimenti a workflow rinominati o cancellati, la suite dello smoke test della
+# Release blocca una regressione nei verdetti prima che arrivi a un deploy.
 on:
   pull_request:
   push:
@@ -47,3 +48,19 @@ jobs:
           GH_TOKEN: ${{ secrets.ORG_READ_TOKEN }}
           STRICT: "true"
         run: scripts/check-workflow-references.sh
+
+  release-smoke-test:
+    name: Release smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Il module gira sui server con una shell minima: shellcheck lo legge come
+      # POSIX sh, e la suite lo lancia con dash.
+      - name: Lint the module and its suite
+        run: shellcheck -s sh scripts/release-smoke-test.sh scripts/tests/release-smoke-test.test.sh
+
+      - name: Run the suite
+        run: scripts/tests/release-smoke-test.test.sh
