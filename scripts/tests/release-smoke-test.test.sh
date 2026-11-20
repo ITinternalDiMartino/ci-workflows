@@ -10,7 +10,7 @@
 #   TEST_SHELL  la shell con cui lanciare il module (default: dash se c'è,
 #               altrimenti sh): il module deve girare su una shell POSIX minima
 #
-# Dipendenze: python3, curl.
+# Dipendenze: python3, curl, openssl.
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -32,6 +32,16 @@ stop_server() {
 trap 'stop_server; rm -rf "$WORK"' EXIT
 trap 'exit 130' INT TERM HUP
 
+# Certificato autofirmato per 127.0.0.1: il server di test risponde anche in
+# HTTPS sulla stessa porta, e curl si fida di questo certificato attraverso
+# CURL_CA_BUNDLE, senza toccare il module.
+if ! openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=127.0.0.1' \
+  -addext 'subjectAltName=IP:127.0.0.1' \
+  -keyout "$WORK/key.pem" -out "$WORK/cert.pem" > /dev/null 2>&1; then
+  echo "openssl non ha generato il certificato di test" >&2
+  exit 1
+fi
+
 PASSED=0
 FAILED=0
 CURRENT_FAILED=''
@@ -48,7 +58,8 @@ serve() {
   printf '%s\n' "$1" > "$WORK/routes.json"
   rm -f "$WORK/port" "$WORK/requests"
   : > "$WORK/requests"
-  python3 -I "$SERVER" "$WORK/routes.json" "$WORK/port" "$WORK/requests" &
+  python3 -I "$SERVER" "$WORK/routes.json" "$WORK/port" "$WORK/requests" \
+    "$WORK/cert.pem" "$WORK/key.pem" &
   SERVER_PID=$!
   i=0
   while [ ! -s "$WORK/port" ]; do
@@ -59,14 +70,15 @@ serve() {
     fi
     sleep 0.05
   done
-  URL="http://127.0.0.1:$(cat "$WORK/port")"
+  PORT="$(cat "$WORK/port")"
+  URL="http://127.0.0.1:$PORT"
 }
 
 # Lancia il module contro il server, con un'attesa breve fra un tentativo e
 # l'altro. Gli argomenti si aggiungono (e possono sostituire) quelli di default.
 smoke() {
-  OUT="$("$TEST_SHELL" "$MODULE" --url "$URL" --release R1 --health-path /up \
-    --timeout 2 --interval 1 "$@" 2>&1)"
+  OUT="$(CURL_CA_BUNDLE="$WORK/cert.pem" "$TEST_SHELL" "$MODULE" --url "$URL" \
+    --release R1 --health-path /up --timeout 2 --interval 1 "$@" 2>&1)"
   RC=$?
 }
 
@@ -228,6 +240,84 @@ test_no_redirects_on_home() {
   expect_rc 0
   expect_out '/ → 302'
   expect_not_requested /login
+}
+
+# --- redirect del marcatore -------------------------------------------------
+
+# Il dominio forza HTTPS: http:// risponde 301 verso lo stesso host e lo stesso
+# percorso in https://, che serve la Release.
+FORCED_HTTPS='{"status": 301, "body": "Moved Permanently", "headers": {"Location": "https://127.0.0.1:{port}/release.txt"}}'
+
+test_server_switches_to_https_when_forced() {
+  serve '{"/release.txt": ['"$FORCED_HTTPS"'], "https /release.txt": [{"status": 200, "body": "R1"}], '"$HEALTHY"'}'
+  smoke --redirects none
+  expect_rc 0
+  expect_out 'release-smoke-test: online'
+  expect_requested 'https /release.txt'
+  expect_requested 'https /up'
+  expect_requested 'https /'
+  expect_out "conviene APP_URL=https://127.0.0.1:$PORT nel .env"
+  expect_out "release-smoke-test-url: https://127.0.0.1:$PORT"
+}
+
+test_https_switch_note_as_github_annotation() {
+  serve '{"/release.txt": ['"$FORCED_HTTPS"'], "https /release.txt": [{"status": 200, "body": "R1"}], '"$HEALTHY"'}'
+  smoke --redirects none --github
+  expect_rc 0
+  expect_out '::notice::http:// redirige su https://'
+}
+
+test_no_url_line_without_switch() {
+  serve '{"/release.txt": [{"status": 200, "body": "R1"}], '"$HEALTHY"'}'
+  smoke --redirects none
+  expect_rc 0
+  expect_no_out 'release-smoke-test-url:'
+}
+
+test_server_redirect_to_other_host_stops() {
+  serve '{"/release.txt": [{"status": 301, "body": "Moved", "headers": {"Location": "https://altro.example/release.txt"}}], '"$HEALTHY"'}'
+  smoke --redirects none --timeout 60
+  expect_rc 1
+  expect_out 'HTTP 301'
+  expect_out 'https://altro.example/release.txt'
+  expect_out 'release-smoke-test: redirect'
+  expect_no_out 'release-smoke-test-url:'
+}
+
+test_server_redirect_to_other_path_stops() {
+  serve '{"/release.txt": [{"status": 302, "body": "Found", "headers": {"Location": "https://127.0.0.1:{port}/login"}}], '"$HEALTHY"'}'
+  smoke --redirects none --timeout 60
+  expect_rc 1
+  expect_out 'HTTP 302'
+  expect_out 'release-smoke-test: redirect'
+  expect_not_requested 'https /login'
+}
+
+test_server_redirect_after_https_switch_stops() {
+  serve '{"/release.txt": ['"$FORCED_HTTPS"'], "https /release.txt": [{"status": 301, "headers": {"Location": "https://www.example/release.txt"}}], '"$HEALTHY"'}'
+  smoke --redirects none --timeout 60
+  expect_rc 1
+  expect_out "release-smoke-test-url: https://127.0.0.1:$PORT"
+  expect_out 'release-smoke-test: redirect'
+}
+
+test_runner_redirect_to_other_host_waits_as_before() {
+  serve '{"/release.txt": [{"status": 301, "body": "Moved", "headers": {"Location": "https://altro.example/release.txt"}}], '"$HEALTHY"'}'
+  smoke --redirects follow
+  expect_rc 1
+  expect_out '(verdetto: mismatch, HTTP 301)'
+  expect_out 'release-smoke-test: timeout'
+  expect_no_out 'release-smoke-test: redirect'
+}
+
+test_runner_forced_https_waits_as_before() {
+  serve '{"/release.txt": ['"$FORCED_HTTPS"'], "https /release.txt": [{"status": 200, "body": "R1"}], '"$HEALTHY"'}'
+  smoke --redirects follow
+  expect_rc 1
+  expect_out '(verdetto: mismatch, HTTP 301)'
+  expect_out 'release-smoke-test: timeout'
+  expect_no_out 'release-smoke-test-url:'
+  expect_not_requested 'https /release.txt'
 }
 
 # --- decisions-script --------------------------------------------------------
