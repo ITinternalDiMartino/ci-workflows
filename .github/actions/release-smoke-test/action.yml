@@ -83,13 +83,20 @@ runs:
               ssh target "sh -s -- $(q "$1") $(q "$MARKER_DIR") $(q "$RELEASE")"
           }
           trap 'marcatore rimuovi || echo "::warning::non sono riuscito a rimuovere il marcatore da $MARKER_DIR"' EXIT
-          trap 'exit 130' INT TERM HUP
+          smoke=""
+          trap '[ -z "$smoke" ] || kill "$smoke" 2> /dev/null; exit 130' INT TERM HUP
           marcatore scrivi
 
           args=(--url "$URL" --release "$RELEASE" --health-path "$HEALTH_PATH"
             --timeout "$SMOKE_TIMEOUT" --redirects follow --github)
           [ -z "$DECISIONS" ] || args+=(--decisions "$DECISIONS")
-          sh "$MODULE" "${args[@]}"
+          # In background più wait: con un comando in primo piano bash eseguirebbe
+          # la trap solo alla sua fine, e una cancellazione che arriva solo a
+          # questa shell lascerebbe il marcatore fino a smoke-timeout. wait invece
+          # si interrompe sul segnale, e con -e un esito non zero esce subito.
+          sh "$MODULE" "${args[@]}" &
+          smoke=$!
+          wait "$smoke"
           exit
         fi
 
