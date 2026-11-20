@@ -32,7 +32,7 @@ jobs:
           cache: npm
 
       - name: Configure authentication for private dependencies
-        uses: ITinternalDiMartino/ci-workflows/.github/actions/private-deps-auth@main
+        uses: ITinternalDiMartino/ci-workflows/.github/actions/private-deps-auth@main-v2
         with:
           token: ${{ secrets.GH_TOKEN }}
 
