@@ -1,7 +1,14 @@
 #!/bin/sh
 # Smoke test della Release: risponde alla domanda "la Release nuova è davvero in
-# linea?". Aspetta che il sito serva il marcatore della Release attesa, classifica
+# linea?". Aspetta che PHP serva il marcatore della Release attesa, classifica
 # ogni risposta in un verdetto, poi controlla health path e home.
+#
+# Il marcatore è un file PHP con un nome fisso da sonda, /__probe-release.php,
+# che stampa il nome della Release. Esiste solo dentro la public/ della Release
+# nuova: finché la realpath cache di PHP (default 120s) risolve current nella
+# Release precedente il file non c'è e la risposta è un 404. Un file statico non
+# basterebbe: il web server lo servirebbe appena current cambia, e health path e
+# home misurerebbero ancora il codice vecchio.
 #
 # È POSIX sh, senza bash: sul server cPanel la shell non interattiva è minima.
 # Si usa in due modi, con lo stesso interface:
@@ -22,6 +29,12 @@
 #                          seguito, come con smoke-from 'server' (default: follow)
 #   --decisions PERCORSO   decisions-script che decide i verdetti al posto del
 #                          default (contratto sotto)
+#   --marker-dir DIR       la public/ della Release, quando il module gira dove
+#                          c'è il suo filesystem: il module scrive il marcatore
+#                          in DIR e lo rimuove all'uscita, anche se fallisce o
+#                          viene interrotto (INT, TERM, HUP, PIPE). Senza, il
+#                          marcatore lo scrive e lo rimuove il chiamante con
+#                          release_smoke_marker (sotto)
 #   --github               errori come annotazioni di GitHub Actions (::error::)
 #
 # Verdetti sul marcatore. Un 404 o una risposta assente (codice 000) sono sempre
@@ -40,13 +53,32 @@
 #                                                esce non zero e stampa cosa è fallito
 #
 # Uscita: l'ultima riga è "release-smoke-test: <esito>", con esito fra online,
-# timeout, challenged, html-page, unhealthy, unavailable (manca curl), usage.
-# Exit code 0 solo con online, 2 per un uso sbagliato, 1 altrimenti.
+# timeout, challenged, html-page, unhealthy, unavailable (manca curl o il
+# marcatore non si può scrivere), usage. Exit code 0 solo con online, 2 per un
+# uso sbagliato, 1 altrimenti.
+#
+# Il marcatore, per chi lo gestisce da fuori (il deploy con smoke-from 'runner',
+# via SSH). Nome e contenuto del file stanno solo qui:
+#   release_smoke_marker scrivi DIR RELEASE   scrive DIR/__probe-release.php
+#   release_smoke_marker rimuovi DIR          lo rimuove, se c'è
+
+release_smoke_marker() (
+  file="$2/__probe-release.php"
+  case "$1" in
+    scrivi)
+      # il nome finisce in una stringa PHP fra apici singoli
+      nome="$(printf '%s' "$3" | sed "s/[\\\\']/\\\\&/g")"
+      printf "<?php echo '%s';\n" "$nome" > "$file"
+      ;;
+    rimuovi) rm -f "$file" ;;
+    *) return 2 ;;
+  esac
+)
 
 # Il corpo è una subshell: variabili ed exit restano dentro la funzione, anche
 # quando a chiamarla è uno script concatenato.
 release_smoke_test() (
-  marker_path='/release.txt'
+  marker_path='/__probe-release.php'
   url=''
   release=''
   health_path='/up'
@@ -54,6 +86,7 @@ release_smoke_test() (
   interval=10
   redirects='follow'
   decisions=''
+  marker_dir=''
   github=''
 
   errore() {
@@ -81,7 +114,7 @@ release_smoke_test() (
         shift
         continue
         ;;
-      --url | --release | --health-path | --timeout | --interval | --redirects | --decisions)
+      --url | --release | --health-path | --timeout | --interval | --redirects | --decisions | --marker-dir)
         [ $# -ge 2 ] || uso "$1 vuole un valore"
         ;;
       *) uso "argomento sconosciuto: $1" ;;
@@ -94,6 +127,7 @@ release_smoke_test() (
       --interval) interval="$2" ;;
       --redirects) redirects="$2" ;;
       --decisions) decisions="$2" ;;
+      --marker-dir) marker_dir="$2" ;;
     esac
     shift 2
   done
@@ -109,12 +143,30 @@ release_smoke_test() (
     # senza una barra il nome verrebbe cercato nel PATH
     case "$decisions" in */*) ;; *) decisions="./$decisions" ;; esac
   fi
+  if [ -n "$marker_dir" ]; then
+    [ -d "$marker_dir" ] || uso "--marker-dir '$marker_dir' non è una directory"
+  fi
   if ! command -v curl > /dev/null 2>&1; then
     errore "manca curl: la misura ha bisogno di un client HTTP"
     esito unavailable
     exit 1
   fi
   url="${url%/}"
+
+  # Il marcatore non deve restare servito: si rimuove all'uscita, comunque vada.
+  # Una connessione SSH che cade arriva come SIGPIPE alla prima scrittura, quindi
+  # anche PIPE; nei gestori dei segnali niente output, che rischierebbe un altro
+  # SIGPIPE. Il corpo della funzione è una subshell: queste trap non toccano lo
+  # script a cui il module è concatenato.
+  if [ -n "$marker_dir" ]; then
+    trap 'release_smoke_marker rimuovi "$marker_dir"' EXIT
+    trap 'release_smoke_marker rimuovi "$marker_dir"; exit 130' INT TERM HUP PIPE
+    if ! release_smoke_marker scrivi "$marker_dir" "$release" 2> /dev/null; then
+      errore "non riesco a scrivere il marcatore in $marker_dir"
+      esito unavailable
+      exit 1
+    fi
+  fi
 
   # Imposta codice e corpo della risposta al marcatore. stderr di curl non va
   # silenziato: quando non si connette, la sua riga è l'unica diagnosi. Con -w
