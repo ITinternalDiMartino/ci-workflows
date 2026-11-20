@@ -1,0 +1,100 @@
+name: Release smoke test
+description: >-
+  Waits until the site serves the marker of the given release, then checks the health
+  path and the home page, through the release smoke test module of ci-workflows
+  (scripts/release-smoke-test.sh). With smoke-from 'server' the module runs on the
+  server, over the SSH alias 'target' that the job has already configured.
+
+inputs:
+  url:
+    description: "URL base del sito, già risolto (APP_URL)"
+    required: true
+  release:
+    description: "Nome della release attesa nel marcatore"
+    required: true
+  health-path:
+    description: "Percorso che deve rispondere 200"
+    required: false
+    default: "/up"
+  smoke-from:
+    description: >-
+      'runner': il module gira qui e segue i redirect di health path e home.
+      'server': il module viene inviato al server sull'alias SSH 'target' e non
+      segue redirect
+    required: false
+    default: "runner"
+  smoke-timeout:
+    description: "Secondi di attesa perché il marcatore della release compaia"
+    required: false
+    default: "150"
+  decisions-script:
+    description: >-
+      Percorso, nel workspace, dello script che decide i verdetti
+      ('smoke-marker' e 'smoke-health'). Con smoke-from 'server' viene copiato
+      sul server per la durata dello smoke test
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Smoke test
+      shell: bash
+      env:
+        URL: ${{ inputs.url }}
+        RELEASE: ${{ inputs.release }}
+        HEALTH_PATH: ${{ inputs.health-path }}
+        SMOKE_FROM: ${{ inputs.smoke-from }}
+        SMOKE_TIMEOUT: ${{ inputs.smoke-timeout }}
+        DECISIONS: ${{ inputs.decisions-script }}
+      run: |
+        # Il runner scarica l'intero repository di un'action, non solo la sua
+        # cartella: il module arriva da ci-workflows, mai dal repository chiamante.
+        MODULE="$GITHUB_ACTION_PATH/../../../scripts/release-smoke-test.sh"
+
+        case "$SMOKE_FROM" in
+          runner | server) ;;
+          *)
+            echo "::error::smoke-from vale '$SMOKE_FROM': gli unici valori ammessi sono 'runner' e 'server'"
+            exit 1
+            ;;
+        esac
+        echo "misura da: $SMOKE_FROM · URL sotto test: $URL"
+
+        if [ "$SMOKE_FROM" = "runner" ]; then
+          args=(--url "$URL" --release "$RELEASE" --health-path "$HEALTH_PATH"
+            --timeout "$SMOKE_TIMEOUT" --redirects follow --github)
+          [ -z "$DECISIONS" ] || args+=(--decisions "$DECISIONS")
+          sh "$MODULE" "${args[@]}"
+          exit
+        fi
+
+        # Senza un client HTTP sul server la modalità 'server' produrrebbe
+        # risposte vuote per tutto il periodo di attesa, e poi accuserebbe il
+        # deploy di non essere andato in linea.
+        if ! ssh target "command -v curl" > /dev/null 2>&1; then
+          echo "::error::sul server non c'è curl: con smoke-from 'server' la misura ha bisogno di un client HTTP sulla destinazione"
+          exit 1
+        fi
+
+        # ssh unisce gli argomenti in una riga che la shell remota rilegge: ogni
+        # valore va fra apici singoli.
+        q() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
+
+        # Il decisions-script va dove gira il module. Nella home e non in /tmp,
+        # che su cPanel è spesso montata noexec.
+        remote_decisions=""
+        if [ -n "$DECISIONS" ]; then
+          remote_dir="$(ssh target 'mktemp -d "$HOME/.release-smoke-test.XXXXXX"')"
+          trap 'ssh target "rm -rf $(q "$remote_dir")" || true' EXIT
+          remote_decisions="$remote_dir/decisions"
+          ssh target "cat > $(q "$remote_decisions") && chmod +x $(q "$remote_decisions")" < "$DECISIONS"
+        fi
+
+        # Il module arriva su stdin e viene chiamato come funzione, come quando è
+        # concatenato a setup-releases. Nessun redirect seguito: un redirect fuori
+        # host riporterebbe la misura là da dove si è voluta spostare.
+        remote="sh -s -- --url $(q "$URL") --release $(q "$RELEASE") --health-path $(q "$HEALTH_PATH")"
+        remote="$remote --timeout $(q "$SMOKE_TIMEOUT") --redirects none --github"
+        [ -z "$remote_decisions" ] || remote="$remote --decisions $(q "$remote_decisions")"
+        { cat "$MODULE"; printf '%s\n' 'release_smoke_test "$@"'; } | ssh target "$remote"
