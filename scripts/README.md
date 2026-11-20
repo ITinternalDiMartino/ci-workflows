@@ -367,9 +367,13 @@ non ha cancellato niente e si rilancia. Una fase su uno stato già completo dice
 
 # release-smoke-test.sh
 
-Il module di smoke test della Release: aspetta che il sito serva il marcatore
-della Release attesa, classifica ogni risposta in un verdetto, poi controlla
-health path e home. Il deploy lo usa attraverso la composite action
+Il module di smoke test della Release: aspetta che PHP serva il marcatore della
+Release attesa, classifica ogni risposta in un verdetto, poi controlla health
+path e home. Il marcatore è un file PHP, `/__probe-release.php`, che stampa il nome
+della Release: finché la realpath cache di PHP risolve `current` nella Release
+precedente risponde 404, e lo smoke test aspetta. Con `--marker-dir` lo scrive e
+lo rimuove il module; senza, chi lo chiama (il deploy con `smoke-from: runner`,
+via SSH) con la funzione `release_smoke_marker`. Il deploy lo usa attraverso la composite action
 `.github/actions/release-smoke-test`, sul runner (`smoke-from: runner`) o inviato
 al server sulla connessione SSH già aperta (`smoke-from: server`). Opzioni,
 verdetti e contratto del `decisions-script` sono descritti in testa allo script.
