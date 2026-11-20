@@ -372,7 +372,12 @@ della Release attesa, classifica ogni risposta in un verdetto, poi controlla
 health path e home. Il deploy lo usa attraverso la composite action
 `.github/actions/release-smoke-test`, sul runner (`smoke-from: runner`) o inviato
 al server sulla connessione SSH già aperta (`smoke-from: server`). Opzioni,
-verdetti e contratto del `decisions-script` sono descritti in testa allo script.
+verdetti, redirect e contratto del `decisions-script` sono descritti in testa
+allo script. Con `smoke-from: server`, come le sonde di `setup-releases.sh`, se
+`APP_URL` è in `http://` e il dominio forza HTTPS verso lo stesso host e
+percorso, il module passa a `https://` e consiglia di aggiornare `APP_URL`; ogni
+altro redirect del marcatore ferma lo smoke test con l'esito `redirect`.
+L'action espone l'URL usato davvero come output `url`.
 
 È POSIX sh e si usa allo stesso modo come script o come funzione, quando arriva
 concatenato prima di un altro script su stdin:
@@ -384,7 +389,8 @@ sh scripts/release-smoke-test.sh --url https://dominio.it --release 20261120-101
 
 La suite lo esercita solo dal suo interface, contro un server HTTP locale con
 risposte programmate, e gira in CI su ogni pull request (`check-workflows.yml`).
-In locale servono `python3` e `curl`:
+In locale servono `python3`, `curl` e `openssl` (per il certificato con cui il
+server di test risponde anche in HTTPS):
 
 ```sh
 scripts/tests/release-smoke-test.test.sh
