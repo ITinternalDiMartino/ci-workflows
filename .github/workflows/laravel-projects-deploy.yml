@@ -20,9 +20,22 @@ name: Deploy
 # chiamante (input decisions-script), per tenerli sotto test nella sua suite;
 # con smoke-from 'server' lo script viene copiato sul server per la durata
 # dello smoke test, perché gira accanto al module. Lo smoke test è il module
-# scripts/release-smoke-test.sh, lo stesso per entrambe le modalità: un 404 o
-# una risposta assente sul marcatore sono sempre attesa e non arrivano mai al
-# decisions-script.
+# scripts/release-smoke-test.sh, lo stesso per entrambe le modalità.
+#
+# Verdetti sul marcatore, un insieme chiuso:
+#   match         la Release attesa è in linea: si passa a health path e home
+#   mismatch      risponde un'altra Release: si ritenta fino a smoke-timeout
+#   no-response   404, risposta assente o corpo vuoto: si ritenta
+#   challenged    una protezione anti-bot risponde al posto del marcatore (403
+#                 o 503 con pagina di challenge): ci si ferma subito, e da
+#                 'runner' conviene provare smoke-from 'server'
+#   html-page     una pagina HTML servita con 200: il vhost non serve la
+#                 Release, ci si ferma subito
+#   redirect      in modalità server, un redirect che non si può seguire: ci si
+#                 ferma subito con il codice HTTP
+# Regola "404 = attesa": un 404 o una risposta assente sono sempre attesa e il
+# decisions-script non li riceve mai; gli viene chiesto un verdetto solo sulle
+# altre risposte, e quando c'è decide al posto del default.
 #
 # Layout atteso sul server:
 #   <RELEASES_PATH>/<release>/   una directory per release, create da qui
@@ -137,8 +150,12 @@ on:
         description: >-
           Percorso, nel repository chiamante, di uno script che decide i
           verdetti dello smoke test ('smoke-marker' e 'smoke-health'). Se
-          vuoto, il confronto lo fa questo workflow. Serve ai progetti che
-          vogliono quelle decisioni sotto test nella propria suite
+          vuoto, decide il default di questo workflow. I verdetti sul
+          marcatore sono match, mismatch, no-response, challenged, html-page e
+          redirect. Regola "404 = attesa": un 404 o una risposta assente sono
+          sempre attesa e non arrivano mai allo script, interpellato solo
+          sulle altre risposte. Serve ai progetti che vogliono quelle
+          decisioni sotto test nella propria suite
         required: false
         default: ""
         type: string
