@@ -164,9 +164,16 @@ release_smoke_salute() (
   }
 )
 
-# Il corpo è una subshell: variabili ed exit restano dentro la funzione, anche
-# quando a chiamarla è uno script concatenato.
+# Il corpo gira in una subshell: variabili, funzioni interne, trap ed exit
+# restano dentro la funzione, anche quando a chiamarla è uno script concatenato.
 release_smoke_test() (
+  release_smoke_test_nel_processo "$@"
+)
+
+# Il corpo dello smoke test, che gira nel processo che lo chiama: ci installa le
+# sue trap e ne esce con exit. Interna: la chiama direttamente solo questo file
+# lanciato come script (in fondo). Uno script concatenato usa release_smoke_test.
+release_smoke_test_nel_processo() {
   marker_path="/$RELEASE_SMOKE_MARKER"
   url=''
   release=''
@@ -253,8 +260,9 @@ release_smoke_test() (
   # Il marcatore non deve restare servito: si rimuove all'uscita, comunque vada.
   # Una connessione SSH che cade arriva come SIGPIPE alla prima scrittura, quindi
   # anche PIPE; nei gestori dei segnali niente output, che rischierebbe un altro
-  # SIGPIPE. Il corpo della funzione è una subshell: queste trap non toccano lo
-  # script a cui il module è concatenato.
+  # SIGPIPE. Da concatenato il corpo gira nella subshell di release_smoke_test:
+  # queste trap non toccano lo script a cui il module è concatenato. Lanciato
+  # come script, sono le trap del processo dello script.
   if [ -n "$marker_dir" ]; then
     trap 'release_smoke_marker rimuovi "$marker_dir"' EXIT
     trap 'release_smoke_marker rimuovi "$marker_dir"; exit 130' INT TERM HUP PIPE
@@ -395,9 +403,13 @@ release_smoke_test() (
   fi
 
   esito online
-)
+}
 
-# Lanciato come script, e non concatenato a un altro, esegue subito.
+# Lanciato come script, e non concatenato a un altro, esegue subito: il corpo
+# gira nel processo dello script, senza la subshell della funzione. Così chi
+# annulla lo script con un segnale al solo suo processo (lo step dell'action con
+# smoke-from 'runner') raggiunge il processo che fa il lavoro, invece di
+# lasciarlo vivo fino al timeout in una subshell figlia.
 case "${0##*/}" in
-  release-smoke-test.sh) release_smoke_test "$@" ;;
+  release-smoke-test.sh) release_smoke_test_nel_processo "$@" ;;
 esac
