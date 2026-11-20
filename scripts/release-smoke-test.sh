@@ -29,13 +29,24 @@
 #                          seguito, come con smoke-from 'server' (default: follow)
 #   --decisions PERCORSO   decisions-script che decide i verdetti al posto del
 #                          default (contratto sotto)
-#   --marker-dir DIR       la public/ della Release, quando il module gira dove
-#                          c'è il suo filesystem: il module scrive il marcatore
-#                          in DIR e lo rimuove all'uscita, anche se fallisce o
-#                          viene interrotto (INT, TERM, HUP, PIPE). Senza, il
-#                          marcatore lo scrive e lo rimuove il chiamante con
-#                          release_smoke_marker (sotto)
-#   --github               errori come annotazioni di GitHub Actions (::error::)
+#   --marker-dir DIR       la public/ della Release: il module scrive il
+#                          marcatore in DIR e lo rimuove all'uscita, anche se
+#                          fallisce o viene interrotto (INT, TERM, HUP, PIPE; il
+#                          segnale interrompe anche la pausa fra due tentativi).
+#                          Senza, il marcatore deve già essere servito
+#   --marker-host HOST     DIR è sul server HOST, raggiunto con ssh: il module
+#                          invia se stesso e scrive e rimuove il marcatore là
+#                          (smoke-from 'runner'). Solo lanciato come script, e
+#                          con --marker-dir. Se la scrittura fallisce l'esito è
+#                          unavailable; se fallisce la rimozione, che ha un
+#                          ConnectTimeout di 5s, è un avviso e l'esito non cambia
+#   --remove-marker        non fa lo smoke test: rimuove soltanto il marcatore da
+#                          --marker-dir (con o senza --marker-host) ed esce con 0,
+#                          anche se non c'è o se non riesce (con un avviso). È la
+#                          pulizia di chi non può contare sulle trap del module
+#   --github               errori come annotazioni di GitHub Actions (::error::,
+#                          ::warning::), e con GITHUB_OUTPUT impostato aggiunge
+#                          "url=<url usato davvero>" a quel file, qualunque esito
 #
 # Verdetti sul marcatore. Un 404 o una risposta assente (codice 000) sono sempre
 # attesa, con verdetto no-response, e non arrivano mai al decisions-script: il
@@ -69,13 +80,10 @@
 # il marcatore non si può scrivere), usage. Exit code 0 solo con online, 2 per
 # un uso sbagliato, 1 altrimenti.
 #
-# Il marcatore, per chi lo gestisce da fuori (il deploy con smoke-from 'runner',
-# via SSH). Nome e contenuto del file stanno solo qui:
-#   release_smoke_marker scrivi DIR RELEASE   scrive DIR/__probe-release.php
-#   release_smoke_marker rimuovi DIR          lo rimuove, se c'è
-# Un sottocomando sconosciuto esce con 2.
+# Il marcatore lo scrive e lo rimuove solo il module, in entrambe le modalità
+# smoke-from: nome e contenuto del file stanno solo qui.
 #
-# Le altre funzioni pubbliche, per chi arriva concatenato dopo il module
+# Le funzioni pubbliche, per chi arriva concatenato dopo il module
 # (setup-releases.sh): sono quelle che lo smoke test usa al suo interno, così
 # richieste, passaggio a https e criterio di salute restano uno solo.
 #   release_smoke_risposta URL           GET senza redirect: il corpo, poi una
@@ -92,6 +100,8 @@
 # il nome del file, che è anche il percorso servito sotto l'URL del sito
 RELEASE_SMOKE_MARKER='__probe-release.php'
 
+# Interna: scrive (scrivi DIR RELEASE) o rimuove (rimuovi DIR) il marcatore in
+# DIR. La chiama lo smoke test, qui o sul server via ssh con --marker-host.
 release_smoke_marker() (
   file="$2/$RELEASE_SMOKE_MARKER"
   case "$1" in
@@ -166,14 +176,19 @@ release_smoke_salute() (
 
 # Il corpo gira in una subshell: variabili, funzioni interne, trap ed exit
 # restano dentro la funzione, anche quando a chiamarla è uno script concatenato.
+# Concatenato il module non conosce il proprio file: niente --marker-host.
 release_smoke_test() (
-  release_smoke_test_nel_processo "$@"
+  release_smoke_test_nel_processo '' "$@"
 )
 
 # Il corpo dello smoke test, che gira nel processo che lo chiama: ci installa le
 # sue trap e ne esce con exit. Interna: la chiama direttamente solo questo file
 # lanciato come script (in fondo). Uno script concatenato usa release_smoke_test.
+# Il primo argomento è il file del module, vuoto quando è concatenato: con
+# --marker-host il module lo invia al server per scrivere il marcatore.
 release_smoke_test_nel_processo() {
+  sorgente="$1"
+  shift
   marker_path="/$RELEASE_SMOKE_MARKER"
   url=''
   release=''
@@ -183,13 +198,25 @@ release_smoke_test_nel_processo() {
   redirects='follow'
   decisions=''
   marker_dir=''
+  marker_host=''
+  solo_rimozione=''
   github=''
+  marcatore_scritto=''
+  pausa=''
 
   errore() {
     if [ -n "$github" ]; then
       echo "::error::$*"
     else
       echo "errore: $*"
+    fi
+  }
+
+  avviso() {
+    if [ -n "$github" ]; then
+      echo "::warning::$*"
+    else
+      echo "attenzione: $*"
     fi
   }
 
@@ -211,6 +238,39 @@ release_smoke_test_nel_processo() {
     exit 2
   }
 
+  # ssh unisce gli argomenti in una riga che la shell remota rilegge: ogni
+  # valore va fra apici singoli.
+  apici() {
+    printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+  }
+
+  # Il marcatore, dovunque sia la public/ della Release. Due adapter: senza
+  # --marker-host il filesystem di qui; con --marker-host il server, via ssh,
+  # dove il module invia se stesso e chiama release_smoke_marker. Primo argomento
+  # scrivi o rimuovi; gli altri sono opzioni di ssh, prima dell'host.
+  marcatore() {
+    op="$1"
+    shift
+    if [ -z "$marker_host" ]; then
+      release_smoke_marker "$op" "$marker_dir" "$release" 2> /dev/null
+      return
+    fi
+    # shellcheck disable=SC2029 # gli argomenti si espandono qui, già fra apici
+    { cat "$sorgente"; printf '%s\n' 'release_smoke_marker "$@"'; } |
+      ssh "$@" "$marker_host" "sh -s -- $(apici "$op") $(apici "$marker_dir") $(apici "$release")"
+  }
+
+  # dove sta il marcatore, per i messaggi
+  dove() {
+    printf '%s' "${marker_host:+$marker_host:}$marker_dir"
+  }
+
+  # La rimozione ha un timeout di connessione breve: quando lo step viene
+  # annullato, il runner concede pochi secondi prima di uccidere tutto.
+  rimuovi_marcatore() {
+    marcatore rimuovi -o ConnectTimeout=5
+  }
+
   while [ $# -gt 0 ]; do
     case "$1" in
       --github)
@@ -218,7 +278,12 @@ release_smoke_test_nel_processo() {
         shift
         continue
         ;;
-      --url | --release | --health-path | --timeout | --interval | --redirects | --decisions | --marker-dir)
+      --remove-marker)
+        solo_rimozione=1
+        shift
+        continue
+        ;;
+      --url | --release | --health-path | --timeout | --interval | --redirects | --decisions | --marker-dir | --marker-host)
         [ $# -ge 2 ] || uso "$1 vuole un valore"
         ;;
       *) uso "argomento sconosciuto: $1" ;;
@@ -232,9 +297,23 @@ release_smoke_test_nel_processo() {
       --redirects) redirects="$2" ;;
       --decisions) decisions="$2" ;;
       --marker-dir) marker_dir="$2" ;;
+      --marker-host) marker_host="$2" ;;
     esac
     shift 2
   done
+
+  if [ -n "$marker_host" ]; then
+    [ -n "$marker_dir" ] || uso "--marker-host vuole --marker-dir: la public/ della Release sul server"
+    [ -n "$sorgente" ] || uso "--marker-host vale solo lanciando il module come script: concatenato, il module gira già sul server e basta --marker-dir"
+  fi
+
+  # Sola rimozione, per la pulizia dopo lo smoke test: ripetibile, e una
+  # rimozione non riuscita è un avviso, mai un errore.
+  if [ -n "$solo_rimozione" ]; then
+    [ -n "$marker_dir" ] || uso "--remove-marker vuole --marker-dir"
+    rimuovi_marcatore || avviso "non riesco a rimuovere il marcatore da $(dove)"
+    exit 0
+  fi
 
   [ -n "$url" ] || uso "manca --url"
   [ -n "$release" ] || uso "manca --release"
@@ -247,29 +326,57 @@ release_smoke_test_nel_processo() {
     # senza una barra il nome verrebbe cercato nel PATH
     case "$decisions" in */*) ;; *) decisions="./$decisions" ;; esac
   fi
-  if [ -n "$marker_dir" ]; then
+  # con --marker-host la directory è sul server: lì la verifica è la scrittura
+  if [ -n "$marker_dir" ] && [ -z "$marker_host" ]; then
     [ -d "$marker_dir" ] || uso "--marker-dir '$marker_dir' non è una directory"
   fi
-  if ! command -v curl > /dev/null 2>&1; then
-    errore "manca curl: la misura ha bisogno di un client HTTP"
-    esito unavailable
-    exit 1
-  fi
   url="${url%/}"
+
+  # Chiude lo smoke test: rimuove il marcatore, se è stato scritto, pubblica in
+  # GITHUB_OUTPUT l'URL usato davvero (con --github) e stampa l'esito, che resta
+  # l'ultima riga. Una rimozione non riuscita non cambia l'esito.
+  termina() {
+    trap - EXIT
+    if [ -n "$marcatore_scritto" ] && ! rimuovi_marcatore; then
+      avviso "non riesco a rimuovere il marcatore da $(dove): resta servito finché qualcuno non lo rimuove (--remove-marker)"
+    fi
+    if [ -n "$github" ] && [ -n "${GITHUB_OUTPUT:-}" ]; then
+      echo "url=$url" >> "$GITHUB_OUTPUT"
+    fi
+    esito "$1"
+    exit "$2"
+  }
 
   # Il marcatore non deve restare servito: si rimuove all'uscita, comunque vada.
   # Una connessione SSH che cade arriva come SIGPIPE alla prima scrittura, quindi
   # anche PIPE; nei gestori dei segnali niente output, che rischierebbe un altro
-  # SIGPIPE. Da concatenato il corpo gira nella subshell di release_smoke_test:
-  # queste trap non toccano lo script a cui il module è concatenato. Lanciato
-  # come script, sono le trap del processo dello script.
+  # SIGPIPE. Il segnale interrompe anche la pausa fra due tentativi (sleep in
+  # background più wait): chi annulla lo step non aspetta la fine della pausa.
+  # Da concatenato il corpo gira nella subshell di release_smoke_test: queste
+  # trap non toccano lo script a cui il module è concatenato. Lanciato come
+  # script, sono le trap del processo dello script.
+  # shellcheck disable=SC2329 # chiamata dalla trap qui sotto
+  interrotto() {
+    trap - EXIT
+    [ -z "$pausa" ] || kill "$pausa" 2> /dev/null
+    [ -z "$marcatore_scritto" ] || rimuovi_marcatore > /dev/null 2>&1
+    exit 130
+  }
+  trap '[ -z "$marcatore_scritto" ] || rimuovi_marcatore > /dev/null 2>&1' EXIT
+  trap interrotto INT TERM HUP PIPE
+
+  if ! command -v curl > /dev/null 2>&1; then
+    errore "manca curl: la misura ha bisogno di un client HTTP"
+    termina unavailable 1
+  fi
+
   if [ -n "$marker_dir" ]; then
-    trap 'release_smoke_marker rimuovi "$marker_dir"' EXIT
-    trap 'release_smoke_marker rimuovi "$marker_dir"; exit 130' INT TERM HUP PIPE
-    if ! release_smoke_marker scrivi "$marker_dir" "$release" 2> /dev/null; then
-      errore "non riesco a scrivere il marcatore in $marker_dir"
-      esito unavailable
-      exit 1
+    # segnato prima di scrivere: un segnale a metà scrittura lo rimuove lo stesso
+    marcatore_scritto=1
+    if ! marcatore scrivi; then
+      marcatore_scritto=''
+      errore "non riesco a scrivere il marcatore in $(dove)"
+      termina unavailable 1
     fi
   fi
 
@@ -352,8 +459,7 @@ release_smoke_test_nel_processo() {
       case "$codice" in
         3??)
           errore "il marcatore riceve un redirect (HTTP $codice verso ${redirect_verso:-destinazione assente}): con smoke-from 'server' i redirect non si seguono. Controlla APP_URL ($url)"
-          esito redirect
-          exit 1
+          termina redirect 1
           ;;
       esac
     fi
@@ -370,23 +476,23 @@ release_smoke_test_nel_processo() {
       # inizierà da sé, quindi ritentare è tempo buttato.
       challenged)
         errore "una protezione anti-bot risponde al posto del marcatore. Da 'runner' è attesa su alcuni hosting: prova smoke-from 'server'. Da 'server' significa che la misura via HTTP non è utilizzabile su questa destinazione"
-        esito challenged
-        exit 1
+        termina challenged 1
         ;;
       html-page)
         errore "risponde una pagina HTML invece del marcatore: questo vhost non serve la Release ($url non punta alla public/ della Release, o ${marker_path#/} non c'è)"
-        esito html-page
-        exit 1
+        termina html-page 1
         ;;
     esac
 
     if [ "$(date +%s)" -ge "$fine" ]; then
       errore "dopo ${timeout}s il marcatore non è quello della release $release (verdetto: $verdetto, HTTP $codice)"
-      esito timeout
-      exit 1
+      termina timeout 1
     fi
     echo "marcatore: $verdetto (HTTP $codice), riprovo fra ${interval}s"
-    sleep "$interval"
+    sleep "$interval" &
+    pausa=$!
+    wait "$pausa"
+    pausa=''
   done
 
   # L'health path fa il boot completo del framework ma non attraversa routing,
@@ -398,11 +504,10 @@ release_smoke_test_nel_processo() {
 
   if ! falliti="$(release_smoke_salute "$health_path" "$codice_health" "$codice_home" "$decisions")"; then
     errore "smoke test fallito: $falliti"
-    esito unhealthy
-    exit 1
+    termina unhealthy 1
   fi
 
-  esito online
+  termina online 0
 }
 
 # Lanciato come script, e non concatenato a un altro, esegue subito: il corpo
@@ -411,5 +516,5 @@ release_smoke_test_nel_processo() {
 # smoke-from 'runner') raggiunge il processo che fa il lavoro, invece di
 # lasciarlo vivo fino al timeout in una subshell figlia.
 case "${0##*/}" in
-  release-smoke-test.sh) release_smoke_test_nel_processo "$@" ;;
+  release-smoke-test.sh) release_smoke_test_nel_processo "$0" "$@" ;;
 esac

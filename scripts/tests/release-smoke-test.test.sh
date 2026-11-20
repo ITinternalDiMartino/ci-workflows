@@ -42,6 +42,31 @@ if ! openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=127.0.0.1' \
   exit 1
 fi
 
+# Un ssh finto, primo nel PATH: registra gli argomenti in ssh.log, ignora opzioni
+# e host ed esegue in locale il comando remoto (l'ultimo argomento) con lo stesso
+# stdin, come la shell remota. Se ssh-fail contiene una parola presente negli
+# argomenti, fallisce come una connessione rifiutata.
+SSH_LOG="$WORK/ssh.log"
+SSH_FAIL="$WORK/ssh-fail"
+mkdir -p "$WORK/bin"
+cat > "$WORK/bin/ssh" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> '$SSH_LOG'
+if [ -s '$SSH_FAIL' ]; then
+  case "\$*" in
+    *"\$(cat '$SSH_FAIL')"*)
+      echo 'ssh: connect to host target port 22: Connection refused' >&2
+      exit 255
+      ;;
+  esac
+fi
+eval "comando=\\\${\$#}"
+exec sh -c "\$comando"
+EOF
+chmod +x "$WORK/bin/ssh"
+PATH="$WORK/bin:$PATH"
+export PATH
+
 PASSED=0
 FAILED=0
 CURRENT_FAILED=''
@@ -177,32 +202,6 @@ test_static_marker_does_not_mean_online() {
   expect_out 'release-smoke-test: timeout'
   expect_not_requested /up
   expect_not_requested /
-}
-
-# Il marcatore gestito da fuori, come fa il deploy con smoke-from 'runner': la
-# funzione arriva concatenata su stdin, come attraverso SSH.
-marker_from_stdin() {
-  { cat "$MODULE"; printf '%s\n' 'release_smoke_marker "$@"'; } | "$TEST_SHELL" -s -- "$@"
-}
-
-test_marker_managed_from_outside() {
-  fresh_public
-  serve '{'"$PHP_MARKER"', '"$HEALTHY"'}'
-  marker_from_stdin scrivi "$PUBLIC" R1 || fail "scrivi è uscito con $?"
-  smoke
-  expect_rc 0
-  expect_out 'release-smoke-test: online'
-  marker_from_stdin rimuovi "$PUBLIC" || fail "rimuovi è uscito con $?"
-  expect_public_empty
-  # rimuovere un marcatore che non c'è non è un errore: la pulizia è ripetibile
-  marker_from_stdin rimuovi "$PUBLIC" || fail "rimuovi senza marcatore è uscito con $?"
-}
-
-test_marker_rejects_unknown_command() {
-  fresh_public
-  OUT="$(marker_from_stdin sposta "$PUBLIC" 2>&1)"
-  RC=$?
-  expect_rc 2
 }
 
 test_marker_written_and_served_by_php() {
@@ -362,6 +361,239 @@ test_module_gone_on_term_with_marker_dir() {
   fresh_public
   terminated_alone --marker-dir "$PUBLIC"
   expect_public_empty
+}
+
+# --- marcatore via SSH (smoke-from 'runner') ---------------------------------
+
+# Con --marker-host il module gira qui e scrive il marcatore sul server via ssh,
+# come fa l'action con smoke-from 'runner'. L'ssh finto lo scrive in PUBLIC.
+smoke_ssh() {
+  : > "$SSH_LOG"
+  : > "$SSH_FAIL"
+  smoke --marker-dir "$PUBLIC" --marker-host target "$@"
+}
+
+ssh_called_for() {
+  grep -q "$1" "$SSH_LOG"
+}
+
+expect_last_line() {
+  [ "$(printf '%s\n' "$OUT" | tail -n 1)" = "$1" ] ||
+    fail "l'ultima riga è '$(printf '%s\n' "$OUT" | tail -n 1)', attesa '$1'"
+}
+
+test_ssh_marker_online() {
+  fresh_public
+  serve '{'"$PHP_MARKER"', '"$HEALTHY"'}'
+  smoke_ssh
+  expect_rc 0
+  expect_out 'release-smoke-test: online'
+  ssh_called_for scrivi || fail "il marcatore non è stato scritto via ssh"
+  ssh_called_for rimuovi || fail "il marcatore non è stato rimosso via ssh"
+  expect_public_empty
+}
+
+test_ssh_marker_removed_after_timeout() {
+  fresh_public
+  serve '{"'"$MARKER"'": ['"$NOT_FOUND"'], '"$HEALTHY"'}'
+  smoke_ssh
+  expect_rc 1
+  expect_out 'release-smoke-test: timeout'
+  expect_public_empty
+}
+
+test_ssh_marker_removed_after_unhealthy() {
+  fresh_public
+  serve '{'"$PHP_MARKER"', "/up": [{"status": 500}], "/": [{"status": 200}]}'
+  smoke_ssh
+  expect_rc 1
+  expect_out 'release-smoke-test: unhealthy'
+  expect_last_line 'release-smoke-test: unhealthy'
+  expect_public_empty
+}
+
+# Il nome della Release attraversa due shell: quella di ssh e quella remota.
+test_ssh_marker_keeps_odd_release_names() {
+  fresh_public
+  serve '{'"$PHP_MARKER"', '"$HEALTHY"'}'
+  smoke_ssh --release "R'1\\x\$HOME\";"
+  expect_rc 0
+  expect_out "release in linea: R'1\\x\$HOME\";"
+  expect_public_empty
+}
+
+test_ssh_marker_not_written() {
+  fresh_public
+  serve '{'"$PHP_MARKER"', '"$HEALTHY"'}'
+  : > "$SSH_LOG"
+  echo scrivi > "$SSH_FAIL"
+  smoke --marker-dir "$PUBLIC" --marker-host target
+  : > "$SSH_FAIL"
+  expect_rc 1
+  expect_out 'Connection refused'
+  expect_out 'non riesco a scrivere il marcatore'
+  expect_last_line 'release-smoke-test: unavailable'
+  expect_not_requested "$MARKER"
+  expect_not_requested /up
+}
+
+# Una pulizia non riuscita non trasforma una Release in linea in un fallimento:
+# lo dice, e la rimozione dello step always() dell'action ci riprova.
+test_ssh_marker_not_removed_keeps_outcome() {
+  fresh_public
+  serve '{'"$PHP_MARKER"', '"$HEALTHY"'}'
+  : > "$SSH_LOG"
+  echo rimuovi > "$SSH_FAIL"
+  smoke --marker-dir "$PUBLIC" --marker-host target --github
+  : > "$SSH_FAIL"
+  expect_rc 0
+  expect_out '::warning::non riesco a rimuovere il marcatore'
+  expect_last_line 'release-smoke-test: online'
+  grep 'rimuovi' "$SSH_LOG" | grep -q 'ConnectTimeout=5' ||
+    fail "la rimozione non usa un ConnectTimeout breve: $(cat "$SSH_LOG")"
+}
+
+test_ssh_marker_needs_marker_dir() {
+  serve '{}'
+  smoke --marker-host target
+  expect_rc 2
+  expect_out '--marker-host vuole --marker-dir'
+  expect_out 'release-smoke-test: usage'
+}
+
+# Concatenato, il module gira già dove c'è il filesystem della Release.
+test_ssh_marker_rejected_when_concatenated() {
+  fresh_public
+  serve '{}'
+  OUT="$({ cat "$MODULE"; printf '%s\n' 'release_smoke_test "$@"'; } |
+    "$TEST_SHELL" -s -- --url "$URL" --release R1 --marker-dir "$PUBLIC" --marker-host target 2>&1)"
+  RC=$?
+  expect_rc 2
+  expect_out 'release-smoke-test: usage'
+}
+
+# L'action lancia il module con exec e lo annulla con un segnale al suo solo
+# processo: il marcatore deve sparire subito, anche a metà della pausa fra due
+# tentativi, non quando la pausa finisce.
+test_ssh_marker_removed_at_once_on_term() {
+  fresh_public
+  : > "$SSH_LOG"
+  : > "$SSH_FAIL"
+  serve '{"'"$MARKER"'": ['"$NOT_FOUND"'], '"$HEALTHY"'}'
+  spawn_module --timeout 60 --interval 20 --marker-dir "$PUBLIC" --marker-host target > "$WORK/out" 2>&1 &
+  pid=$!
+  i=0
+  while ! requested "$MARKER" && [ "$i" -lt 100 ]; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+  requested "$MARKER" || fail "il module non è arrivato all'attesa del marcatore"
+  sleep 0.2
+  inizio="$(date +%s)"
+  kill -s TERM "$pid" || fail "il module non esiste: il segnale non è arrivato"
+  wait "$pid"
+  i=0
+  while [ -n "$(ls -A "$PUBLIC")" ] && [ "$i" -lt 100 ]; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+  durata=$(($(date +%s) - inizio))
+  kill -s KILL -- "-$pid" 2> /dev/null
+  OUT="$(cat "$WORK/out")"
+  expect_public_empty
+  [ "$durata" -lt 4 ] || fail "il marcatore è sparito solo dopo ${durata}s: la pausa non è stata interrotta"
+}
+
+# --- url usato davvero in GITHUB_OUTPUT ---------------------------------------
+
+with_github_output() {
+  GITHUB_OUTPUT="$WORK/github-output"
+  export GITHUB_OUTPUT
+  : > "$GITHUB_OUTPUT"
+  smoke "$@"
+  unset GITHUB_OUTPUT
+}
+
+expect_github_output() {
+  [ "$(cat "$WORK/github-output")" = "$1" ] ||
+    fail "GITHUB_OUTPUT contiene '$(cat "$WORK/github-output")', atteso '$1'"
+}
+
+test_github_output_url() {
+  serve '{"'"$MARKER"'": [{"status": 200, "body": "R1"}], '"$HEALTHY"'}'
+  with_github_output --github
+  expect_rc 0
+  expect_github_output "url=$URL"
+}
+
+test_github_output_url_after_https_switch() {
+  serve '{"'"$MARKER"'": ['"$FORCED_HTTPS"'], "https '"$MARKER"'": [{"status": 200, "body": "R1"}], '"$HEALTHY"'}'
+  with_github_output --github
+  expect_rc 0
+  expect_out "release-smoke-test-url: https://127.0.0.1:$PORT"
+  expect_github_output "url=https://127.0.0.1:$PORT"
+}
+
+# Il riepilogo del deploy mostra l'URL anche quando lo smoke test fallisce.
+test_github_output_url_on_failure() {
+  serve '{"'"$MARKER"'": ['"$NOT_FOUND"'], '"$HEALTHY"'}'
+  with_github_output --github
+  expect_rc 1
+  expect_github_output "url=$URL"
+}
+
+test_github_output_untouched_without_github() {
+  serve '{"'"$MARKER"'": [{"status": 200, "body": "R1"}], '"$HEALTHY"'}'
+  with_github_output
+  expect_rc 0
+  expect_github_output ''
+}
+
+# --- sola rimozione del marcatore (step always() dell'action) ----------------
+
+remove_marker() {
+  OUT="$("$TEST_SHELL" "$MODULE" --remove-marker "$@" 2>&1)"
+  RC=$?
+}
+
+leftover_marker() {
+  fresh_public
+  printf "<?php echo 'R1';\n" > "$PUBLIC$MARKER"
+}
+
+test_remove_marker_via_ssh() {
+  leftover_marker
+  : > "$SSH_LOG"
+  : > "$SSH_FAIL"
+  remove_marker --marker-dir "$PUBLIC" --marker-host target
+  expect_rc 0
+  expect_public_empty
+  # rimuovere un marcatore che non c'è non è un errore: la pulizia è ripetibile
+  remove_marker --marker-dir "$PUBLIC" --marker-host target
+  expect_rc 0
+}
+
+test_remove_marker_locally() {
+  leftover_marker
+  remove_marker --marker-dir "$PUBLIC"
+  expect_rc 0
+  expect_public_empty
+}
+
+test_remove_marker_ssh_failure_is_a_warning() {
+  leftover_marker
+  : > "$SSH_LOG"
+  echo rimuovi > "$SSH_FAIL"
+  remove_marker --marker-dir "$PUBLIC" --marker-host target --github
+  : > "$SSH_FAIL"
+  expect_rc 0
+  expect_out '::warning::non riesco a rimuovere il marcatore'
+}
+
+test_remove_marker_needs_marker_dir() {
+  remove_marker --marker-host target
+  expect_rc 2
+  expect_out 'release-smoke-test: usage'
 }
 
 # --- verdetti di default ----------------------------------------------------
