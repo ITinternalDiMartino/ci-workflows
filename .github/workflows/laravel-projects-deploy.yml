@@ -17,7 +17,12 @@ name: Deploy
 # protezioni davanti al server. Dove una protezione anti-bot sfida gli IP dei
 # runner, smoke-from 'server' sposta la misura sulla connessione SSH già
 # aperta. I verdetti possono essere delegati a uno script del repository
-# chiamante (input decisions-script), per tenerli sotto test nella sua suite.
+# chiamante (input decisions-script), per tenerli sotto test nella sua suite;
+# con smoke-from 'server' lo script viene copiato sul server per la durata
+# dello smoke test, perché gira accanto al module. Lo smoke test è il module
+# scripts/release-smoke-test.sh, lo stesso per entrambe le modalità: un 404 o
+# una risposta assente sul marcatore sono sempre attesa e non arrivano mai al
+# decisions-script.
 #
 # Layout atteso sul server:
 #   <RELEASES_PATH>/<release>/   una directory per release, create da qui
@@ -682,127 +687,22 @@ jobs:
           echo "url=$URL" >> "$GITHUB_OUTPUT"
           echo "URL sotto test: $URL"
 
-      # Con smoke-from 'server' le richieste partono dalla connessione SSH già
-      # aperta. Il percorso attraversa web server e PHP - cioè lo stack che il
-      # deploy ha cambiato - ed esclude il solo strato che il deploy non tocca,
-      # che è anche quello che sfida gli IP dei runner. Nessun -L in quella
-      # modalità: un redirect fuori host riporterebbe la misura là da dove si
-      # è voluta spostare.
+      # Lo smoke test è il module di ci-workflows (scripts/release-smoke-test.sh),
+      # che arriva al job attraverso questa action e non dal repository
+      # chiamante. Con smoke-from 'server' il module gira sul server, inviato
+      # sulla connessione SSH già aperta: il percorso attraversa web server e
+      # PHP - cioè lo stack che il deploy ha cambiato - ed esclude il solo strato
+      # che il deploy non tocca, che è anche quello che sfida gli IP dei runner.
       - name: Smoke test
         id: smoke
-        env:
-          URL: ${{ steps.appurl.outputs.url }}
-          HEALTH_PATH: ${{ inputs.health-path }}
-          SMOKE_FROM: ${{ inputs.smoke-from }}
-          SMOKE_TIMEOUT: ${{ inputs.smoke-timeout }}
-          DECISIONS: ${{ inputs.decisions-script }}
-        run: |
-          case "$SMOKE_FROM" in
-            runner | server) ;;
-            *)
-              echo "::error::smoke-from vale '$SMOKE_FROM': gli unici valori ammessi sono 'runner' e 'server'"
-              exit 1
-              ;;
-          esac
-          echo "misura da: $SMOKE_FROM · URL sotto test: $URL"
-
-          # Senza un client HTTP sul server la modalità 'server' produrrebbe
-          # risposte vuote per tutto il periodo di attesa, e poi accuserebbe il
-          # deploy di non essere andato in linea.
-          if [ "$SMOKE_FROM" = "server" ] && ! ssh target "command -v curl" > /dev/null 2>&1; then
-            echo "::error::sul server non c'è curl: con smoke-from 'server' la misura ha bisogno di un client HTTP sulla destinazione"
-            exit 1
-          fi
-
-          # stderr non va silenziato: quando curl non si connette, la sua riga
-          # di errore è l'unica diagnosi disponibile.
-          corpo() {
-            if [ "$SMOKE_FROM" = "server" ]; then
-              ssh target "curl -sS --max-time 10 '$1'" || true
-            else
-              curl -sS --max-time 10 "$1" || true
-            fi
-          }
-
-          # curl stampa già 000 quando la richiesta non va a buon fine: il
-          # default copre solo il caso in cui cada ssh, che non stampa nulla.
-          codice() {
-            if [ "$SMOKE_FROM" = "server" ]; then
-              ssh target "curl -sS -o /dev/null -w '%{http_code}' --max-time 20 '$1'" || true
-            else
-              curl -sS -o /dev/null -w '%{http_code}' -L --max-time 20 "$1" || true
-            fi
-          }
-
-          verdetto() {
-            if [ -n "$DECISIONS" ]; then
-              printf '%s' "$1" | "$DECISIONS" smoke-marker "$RELEASE" || true
-              return
-            fi
-            servita="$(printf '%s' "$1" | tr -d '[:space:]')"
-            if [ -z "$servita" ]; then
-              echo "no-response"
-            elif [ "$servita" = "$RELEASE" ]; then
-              echo "match"
-            else
-              echo "mismatch"
-            fi
-          }
-
-          # Polling del marcatore: dopo lo swap la cache dei path del web server
-          # può far servire la release precedente ancora per un po'. Attesa
-          # deterministica invece di un test a volte rosso.
-          deadline=$((SECONDS + SMOKE_TIMEOUT))
-          while :; do
-            VERDETTO="$(verdetto "$(corpo "$URL/release.txt")")"
-            case "$VERDETTO" in
-              match)
-                echo "release in linea: $RELEASE"
-                break
-                ;;
-              # Verdetti definitivi: il sito non sta servendo il marcatore e non
-              # inizierà da sé, quindi ritentare è tempo buttato. Il messaggio si
-              # spiega da sé invece di lasciare nel log pagine di HTML minificato.
-              challenged)
-                echo "::error::una protezione anti-bot risponde al posto del marcatore. Da 'runner' è attesa su alcuni hosting: prova smoke-from 'server'. Da 'server' significa che la misura via HTTP non è utilizzabile su questa destinazione"
-                exit 1
-                ;;
-              html-page)
-                echo "::error::risponde una pagina HTML invece del marcatore: release.txt non è servito su questo vhost"
-                exit 1
-                ;;
-            esac
-
-            if [ "$SECONDS" -ge "$deadline" ]; then
-              echo "::error::dopo ${SMOKE_TIMEOUT}s il marcatore non è quello della release $RELEASE (verdetto: $VERDETTO)"
-              exit 1
-            fi
-            echo "marcatore: $VERDETTO, riprovo fra 10s"
-            sleep 10
-          done
-
-          # L'health path fa il boot completo del framework ma non attraversa
-          # routing, middleware e manifest di Vite: per quello serve la home,
-          # che redirige al login o risponde direttamente.
-          CODE_HEALTH="$(codice "$URL$HEALTH_PATH")"; CODE_HEALTH="${CODE_HEALTH:-000}"
-          CODE_HOME="$(codice "$URL/")"; CODE_HOME="${CODE_HOME:-000}"
-          echo "$HEALTH_PATH → $CODE_HEALTH · / → $CODE_HOME"
-
-          if [ -n "$DECISIONS" ]; then
-            if ! FALLITI="$("$DECISIONS" smoke-health "$CODE_HEALTH" "$CODE_HOME")"; then
-              echo "::error::smoke test fallito: $FALLITI"
-              exit 1
-            fi
-            exit 0
-          fi
-
-          fallito=""
-          [ "$CODE_HEALTH" = "200" ] || fallito="$HEALTH_PATH=$CODE_HEALTH"
-          [ "$CODE_HOME" -lt 400 ] 2>/dev/null || fallito="$fallito /=$CODE_HOME"
-          if [ -n "$fallito" ]; then
-            echo "::error::smoke test fallito:$fallito"
-            exit 1
-          fi
+        uses: ITinternalDiMartino/ci-workflows/.github/actions/release-smoke-test@main
+        with:
+          url: ${{ steps.appurl.outputs.url }}
+          release: ${{ env.RELEASE }}
+          health-path: ${{ inputs.health-path }}
+          smoke-from: ${{ inputs.smoke-from }}
+          smoke-timeout: ${{ inputs.smoke-timeout }}
+          decisions-script: ${{ inputs.decisions-script }}
 
       # Solo le righe scritte dopo lo swap, così un errore di settimane fa non
       # fa fallire il deploy. ERROR è un avviso, CRITICAL e oltre bloccano.
