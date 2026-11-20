@@ -266,6 +266,22 @@ codice() { curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$1" 2> /dev/nu
 corpo() { curl -sS --max-time 10 "$1" 2> /dev/null || true; }
 verde() { case "$1" in 2?? | 3??) return 0 ;; esac; return 1; }
 
+# APP_URL in http:// su un dominio che forza HTTPS: le sonde non seguono i
+# redirect (un redirect può nascondere un document root sbagliato), quindi
+# riceverebbero solo il 301. Si passa a https:// solo se il redirect porta
+# allo stesso host e allo stesso percorso: è il dominio, non un altro sito.
+https_se_forzato() {
+  case "$URL" in http://*) ;; *) return 0 ;; esac
+  resto="${URL#http://}"
+  dove="$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 10 "$URL/__probe-redirect" 2> /dev/null || true)"
+  case "$dove" in
+    3??" https://$resto/__probe-redirect")
+      URL="https://$resto"
+      nota "http:// redirige su https://: sonde su $URL (conviene APP_URL=$URL nel .env)"
+      ;;
+  esac
+}
+
 richiedi_curl() { command -v curl > /dev/null 2>&1 || muori "sul server non c'è curl: le sonde ne hanno bisogno"; }
 
 # Le sonde non devono restare servite: si cancellano all'uscita, anche se la
@@ -624,6 +640,7 @@ sonde_document_root() {
   richiedi_curl
   URL="$(sito_url)"
   [ -n "$URL" ] || muori "URL del sito non noto: APP_URL assente nel .env, passalo con --url"
+  https_se_forzato
   say "sonde su $URL"
 
   tr="$(token root)"; tp="$(token public)"
@@ -634,6 +651,7 @@ sonde_document_root() {
 
   vr="$(corpo "$URL/__probe-root.txt" | tr -d '[:space:]')"
   vp="$(corpo "$URL/__probe-public.php" | tr -d '\r\n')"
+  cp="$(codice "$URL/__probe-public.php")"
   rimuovi_sonde
   say "  /__probe-root.txt   -> $(printf '%.80s' "${vr:-vuota}")"
   say "  /__probe-public.php -> $(printf '%.120s' "${vp:-vuota}")"
@@ -643,7 +661,12 @@ sonde_document_root() {
   fi
   case "$vp" in
     "$tp|"*) ;;
-    *) muori "la sonda pubblica non risponde: il dominio non serve $BASE/current/public. Non ho creato niente" ;;
+    *)
+      case "$cp" in
+        3??) muori "la sonda pubblica riceve un redirect (HTTP $cp): controlla l'URL delle sonde ($URL) o passalo con --url. Non ho creato niente" ;;
+      esac
+      muori "la sonda pubblica non risponde (HTTP ${cp:-000}): il dominio non serve $BASE/current/public. Non ho creato niente"
+      ;;
   esac
   dr="${vp#"$tp|"}"; dr="${dr%/}"
   case "$dr" in
@@ -773,6 +796,7 @@ legacy() {
   richiedi_curl
   URL="$(sito_url)"
   [ -n "$URL" ] || muori "URL del sito non noto: APP_URL assente in shared/.env, passalo con --url"
+  https_se_forzato
 
   RIPRESA=''
   if [ -d "$LEGACY" ] && [ -f "$ARCHIVIO" ]; then
@@ -883,6 +907,7 @@ cleanup() {
   richiedi_curl
   URL="$(sito_url)"
   [ -n "$URL" ] || muori "URL del sito non noto: APP_URL assente in shared/.env, passalo con --url"
+  https_se_forzato
 
   sonda_release "$LEGACY" || muori "la sonda non è verde: cleanup non cancella niente"
 
