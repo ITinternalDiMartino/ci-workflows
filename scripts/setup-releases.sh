@@ -2,9 +2,15 @@
 # setup-releases.sh - impianto e migrazione al layout a rotazione di
 # laravel-projects-deploy.yml su un dominio cPanel.
 #
-# Si esegue dal proprio computer, senza lasciare niente sul server:
+# Si esegue dal proprio computer, senza lasciare niente sul server, con il
+# module dello smoke test della Release concatenato prima:
 #
-#   ssh utente@host 'sh -s' -- <fase> <modalità> <BASE> [opzioni] < scripts/setup-releases.sh
+#   cat scripts/release-smoke-test.sh scripts/setup-releases.sh |
+#     ssh utente@host 'sh -s' -- <fase> <modalità> <BASE> [opzioni]
+#
+# legacy e cleanup verificano la release con lo stesso smoke test del deploy
+# con smoke-from 'server': un cutover verde vede quello che vedrà il primo
+# deploy.
 #
 # Siccome lo script arriva da stdin non può chiedere niente: ogni fase è un
 # comando a sé e nessuna è interattiva. Le fasi, l'ordine del cutover e le
@@ -19,8 +25,9 @@
 # Opzioni:
 #   --url URL          URL del sito per le sonde (default: APP_URL del .env)
 #   --php-bin PATH     PHP_BIN da verificare (default: il PHP del dominio)
-#   --health-path P    percorso interrogato dalle sonde di legacy e cleanup (default: /)
-#   --timeout N        secondi di attesa della sonda di release (default: 150)
+#   --health-path P    health path dello smoke test di legacy e cleanup, lo
+#                      stesso del deploy.yml: deve rispondere 200 (default: /up)
+#   --timeout N        secondi di attesa del marcatore della release (default: 150)
 #   --no-color         niente sequenze ANSI nell'output
 
 set -eu
@@ -46,17 +53,26 @@ muori()   { printf '%sERRORE: %s%s\n' "$R" "$*" "$N"; exit 1; }
 # Una fase rilanciata su uno stato già fatto non è un errore: esce pulita.
 gia_fatto() { printf '%sgià fatto:%s %s\n' "$G" "$N" "$*"; say "niente è stato modificato"; exit 0; }
 
+COMANDO="cat scripts/release-smoke-test.sh scripts/setup-releases.sh | ssh utente@host 'sh -s' -- <recon|bridge|shared|legacy|cleanup|vars> <--new|--from-existing> <BASE> [opzioni]"
+
 usage() {
-  sed -n '2,23p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//' || true
-  say "uso: ssh utente@host 'sh -s' -- <recon|bridge|shared|legacy|cleanup> <--new|--from-existing> <BASE> [opzioni] < setup-releases.sh"
+  say "uso: $COMANDO"
+  say "fasi, modalità e opzioni: in testa a scripts/setup-releases.sh e in scripts/README.md"
 }
+
+# Lo smoke test arriva dal module concatenato prima di questo script. Lanciato
+# da solo, con il comando di prima, se ne accorgerebbe solo a metà di legacy:
+# meglio fermarsi qui, prima di leggere o toccare qualunque cosa.
+command -v release_smoke_test > /dev/null 2>&1 ||
+  muori "manca il module dello smoke test: lo script va inviato concatenato dopo scripts/release-smoke-test.sh.
+  $COMANDO"
 
 # ---------------------------------------------------------------------------
 # argomenti
 
 FASE="${1:-}"
 [ $# -gt 0 ] && shift
-MODO=''; BASE=''; URL_OPT=''; PHP_OPT=''; HEALTH='/'; TIMEOUT=150; COLORE=1
+MODO=''; BASE=''; URL_OPT=''; PHP_OPT=''; HEALTH='/up'; TIMEOUT=150; COLORE=1
 
 valore() { [ -n "${2:-}" ] || muori "$1 vuole un valore"; }
 while [ $# -gt 0 ]; do
@@ -260,29 +276,32 @@ leggi_php_bin() {
 }
 
 # ---------------------------------------------------------------------------
-# HTTP, dal server come fa il deploy con smoke-from: server
+# HTTP, dal server come fa il deploy con smoke-from: server. Le richieste, il
+# passaggio a https, il criterio di salute e lo smoke test della release sono
+# quelli del module concatenato prima di questo script.
 
-codice() { curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$1" 2> /dev/null || true; }
-corpo() { curl -sS --max-time 10 "$1" 2> /dev/null || true; }
-verde() { case "$1" in 2?? | 3??) return 0 ;; esac; return 1; }
+richiedi_curl() { command -v curl > /dev/null 2>&1 || muori "sul server non c'è curl: le sonde ne hanno bisogno"; }
 
 # APP_URL in http:// su un dominio che forza HTTPS: le sonde non seguono i
 # redirect (un redirect può nascondere un document root sbagliato), quindi
-# riceverebbero solo il 301. Si passa a https:// solo se il redirect porta
-# allo stesso host e allo stesso percorso: è il dominio, non un altro sito.
-https_se_forzato() {
-  case "$URL" in http://*) ;; *) return 0 ;; esac
-  resto="${URL#http://}"
-  dove="$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 10 "$URL/__probe-redirect" 2> /dev/null || true)"
-  case "$dove" in
-    3??" https://$resto/__probe-redirect")
-      URL="https://$resto"
-      nota "http:// redirige su https://: sonde su $URL (conviene APP_URL=$URL nel .env)"
-      ;;
-  esac
+# riceverebbero solo il 301. Si passa a https:// come fa lo smoke test, solo se
+# il redirect porta allo stesso host e allo stesso percorso.
+https_dal_module() {
+  usato="$(release_smoke_https "$URL")"
+  [ "$usato" = "${URL%/}" ] || nota "http:// redirige su https://: sonde su $usato (conviene APP_URL=$usato nel .env)"
+  URL="$usato"
 }
 
-richiedi_curl() { command -v curl > /dev/null 2>&1 || muori "sul server non c'è curl: le sonde ne hanno bisogno"; }
+# Health path e home con il criterio dello smoke test del deploy (health path a
+# 200, home sotto 400), senza seguire redirect. Stampa i codici; vero se sano.
+sito_sano() {
+  cod_health="$(release_smoke_codice "$URL$HEALTH" none)"
+  cod_home="$(release_smoke_codice "$URL/" none)"
+  say "  $URL$HEALTH -> $cod_health · $URL/ -> $cod_home"
+  falliti="$(release_smoke_salute "$HEALTH" "$cod_health" "$cod_home")" && return 0
+  say "  non sano: $falliti"
+  return 1
+}
 
 # Le sonde non devono restare servite: si cancellano all'uscita, anche se la
 # connessione SSH cade a metà.
@@ -293,49 +312,16 @@ trap 'rimuovi_sonde; exit 130' INT TERM HUP
 
 token() { printf '%s-%s-%s' "$1" "$(date +%s)" "$$"; }
 
-# La sonda della release: un file PHP che esiste solo dentro $1. Finché la
-# realpath cache di PHP (default 120s) risolve current nel posto vecchio, dove
-# quel file non c'è, il token non torna. Senza questa attesa il sito
-# risponderebbe verde dai file vecchi, che sono ancora intatti, anche con la
-# release rotta. Poi la pagina vera deve rispondere 2xx o 3xx.
-sonda_release() {
-  tok="$(token rel)"
-  f="$1/public/__probe-release.php"
-  printf "<?php echo '%s';\n" "$tok" > "$f"
-  SONDE="$SONDE $f"
-  fine=$(($(date +%s) + TIMEOUT))
-  while :; do
-    risposta="$(curl -sS --max-time 10 -w '\n%{http_code}' "$URL/__probe-release.php" 2> /dev/null || true)"
-    cod="$(printf '%s\n' "$risposta" | tail -n1)"
-    visto="$(printf '%s\n' "$risposta" | sed '$d' | tr -d '[:space:]')"
-    if [ "$visto" = "$tok" ]; then
-      say "  sonda: PHP risolve current in $1"
-      break
-    fi
-    # Mentre la cache risolve current nel posto vecchio il file non c'è, quindi
-    # l'attesa normale è un 404. Qualunque altra risposta senza token (403 di
-    # permessi, 5xx, redirect, nessuna connessione) non si sistema aspettando:
-    # si ripristina subito invece di lasciare il sito in errore fino al timeout.
-    case "$cod" in
-      404 | 200) ;;
-      *)
-        say "  sonda: HTTP ${cod:-000} da $URL/__probe-release.php: non è la cache, non aspetto (risposta: $(printf '%.80s' "${visto:-vuota}"))"
-        rimuovi_sonde
-        return 1
-        ;;
-    esac
-    if [ "$(date +%s)" -ge "$fine" ]; then
-      say "  sonda: dopo ${TIMEOUT}s PHP non serve ancora da $1 (risposta: $(printf '%.80s' "${visto:-vuota}"))"
-      rimuovi_sonde
-      return 1
-    fi
-    say "  sonda: non ancora, riprovo fra 10s"
-    sleep 10
-  done
-  rimuovi_sonde
-  c="$(codice "$URL$HEALTH")"
-  say "  $URL$HEALTH -> ${c:-000}"
-  verde "${c:-000}"
+# Lo smoke test del deploy sulla release $1. Il module scrive il marcatore PHP
+# nella sua public/ e lo rimuove all'uscita: finché la realpath cache di PHP
+# (default 120s) risolve current nel posto vecchio, dove il marcatore non c'è,
+# la risposta è un 404 e si aspetta. Senza questa attesa il sito risponderebbe
+# dai file vecchi, ancora intatti, anche con la release rotta. Sulle risposte
+# che aspettare non sistema si ferma subito. Nel marcatore va un token, non il
+# nome della directory: niente di rimasto da prima può coincidere.
+smoke_release() {
+  release_smoke_test --url "$URL" --release "$(token rel)" --marker-dir "$1/public" \
+    --health-path "$HEALTH" --timeout "$TIMEOUT" --redirects none
 }
 
 # ---------------------------------------------------------------------------
@@ -603,18 +589,20 @@ bridge() {
   [ "$(tipo_current)" = assente ] || muori "$CUR esiste già e non punta a BASE ($(tipo_di "$CUR")): non la tocco"
   [ -f "$BASE/artisan" ] && [ -f "$BASE/public/index.php" ] || muori "$BASE non sembra un sito Laravel piatto (mancano artisan o public/index.php)"
 
+  # La home, non l'health path: qui conta che il visitatore non veda differenze,
+  # e un sito piatto spesso non ha ancora /up.
   URL="$(sito_url)"
   prima=''
   if [ -n "$URL" ] && command -v curl > /dev/null 2>&1; then
-    prima="$(codice "$URL$HEALTH")"
-    say "prima:  $URL$HEALTH -> $prima"
+    prima="$(release_smoke_codice "$URL/" none 2> /dev/null)"
+    say "prima:  $URL/ -> $prima"
   fi
 
   punta_current "$BASE" || muori "current non risolve in $BASE dopo la creazione"
 
   if [ -n "$prima" ]; then
-    dopo="$(codice "$URL$HEALTH")"
-    say "dopo:   $URL$HEALTH -> $dopo"
+    dopo="$(release_smoke_codice "$URL/" none 2> /dev/null)"
+    say "dopo:   $URL/ -> $dopo"
     [ "$dopo" = "$prima" ] || nota "il codice è cambiato: il ponte da solo non dovrebbe avere effetti visibili, controlla"
   else
     say "sonda saltata: URL non noto o curl assente"
@@ -640,7 +628,7 @@ sonde_document_root() {
   richiedi_curl
   URL="$(sito_url)"
   [ -n "$URL" ] || muori "URL del sito non noto: APP_URL assente nel .env, passalo con --url"
-  https_se_forzato
+  https_dal_module
   say "sonde su $URL"
 
   tr="$(token root)"; tp="$(token public)"
@@ -649,9 +637,13 @@ sonde_document_root() {
   printf "<?php echo '%s', '|', isset(\$_SERVER['DOCUMENT_ROOT']) ? \$_SERVER['DOCUMENT_ROOT'] : '';\n" "$tp" > "$BASE/public/__probe-public.php"
   SONDE="$SONDE $BASE/public/__probe-public.php"
 
-  vr="$(corpo "$URL/__probe-root.txt" | tr -d '[:space:]')"
-  vp="$(corpo "$URL/__probe-public.php" | tr -d '\r\n')"
-  cp="$(codice "$URL/__probe-public.php")"
+  # release_smoke_risposta stampa il corpo e, nell'ultima riga, il codice
+  risp_root="$(release_smoke_risposta "$URL/__probe-root.txt" 2> /dev/null)"
+  risp_public="$(release_smoke_risposta "$URL/__probe-public.php" 2> /dev/null)"
+  vr="$(printf '%s\n' "$risp_root" | sed '$d' | tr -d '[:space:]')"
+  vp="$(printf '%s\n' "$risp_public" | sed '$d' | tr -d '\r\n')"
+  cp="$(printf '%s\n' "$risp_public" | tail -n 1)"
+  cp="${cp%% *}"
   rimuovi_sonde
   say "  /__probe-root.txt   -> $(printf '%.80s' "${vr:-vuota}")"
   say "  /__probe-public.php -> $(printf '%.120s' "${vp:-vuota}")"
@@ -796,7 +788,7 @@ legacy() {
   richiedi_curl
   URL="$(sito_url)"
   [ -n "$URL" ] || muori "URL del sito non noto: APP_URL assente in shared/.env, passalo con --url"
-  https_se_forzato
+  https_dal_module
 
   RIPRESA=''
   if [ -d "$LEGACY" ] && [ -f "$ARCHIVIO" ]; then
@@ -810,9 +802,8 @@ legacy() {
     muori "$ARCHIVIO esiste ma $LEGACY no: stato a metà che non riparo. Spostalo altrove per rifare la fase"
   fi
 
-  c="$(codice "$URL$HEALTH")"
-  say "prima dello spostamento: $URL$HEALTH -> ${c:-000}"
-  verde "${c:-000}" || muori "il sito non risponde già adesso: con current spostato non saprei distinguere la causa"
+  say "prima dello spostamento, con il criterio dello smoke test del deploy:"
+  sito_sano || muori "il sito non è sano già adesso: con current spostato non saprei distinguere la causa. Se l'health path non è $HEALTH, passa con --health-path lo stesso del deploy.yml"
 
   if [ -z "$RIPRESA" ]; then
     spazio_sufficiente || muori "spazio insufficiente per archivio e copia"
@@ -881,8 +872,8 @@ legacy() {
     muori "lo swap non ha avuto effetto: current riportato su $BASE"
   }
 
-  say "5. il sito risponde da releases/000-legacy?"
-  if sonda_release "$LEGACY"; then
+  say "5. il sito risponde da releases/000-legacy? (smoke test del deploy)"
+  if smoke_release "$LEGACY"; then
     say ""
     say "${G}fatto${N}: il sito risponde da $LEGACY. La home è ancora intatta."
     say "rete di sicurezza fino a cleanup:  ln -sfn '$BASE' '$CUR.new' && mv -Tf '$CUR.new' '$CUR'"
@@ -890,8 +881,7 @@ legacy() {
   else
     say "   il sito non risponde: riporto current su $BASE"
     punta_current "$BASE" || rosso "ATTENZIONE: current non risolve in $BASE, sistemalo a mano: ln -sfn '$BASE' '$CUR'"
-    c="$(codice "$URL$HEALTH")"
-    say "   $URL$HEALTH -> ${c:-000}"
+    sito_sano || true
     muori "legacy fermata al passo 5. Non ho cancellato niente: archivio e copia restano, la fase si rilancia"
   fi
 }
@@ -907,9 +897,9 @@ cleanup() {
   richiedi_curl
   URL="$(sito_url)"
   [ -n "$URL" ] || muori "URL del sito non noto: APP_URL assente in shared/.env, passalo con --url"
-  https_se_forzato
+  https_dal_module
 
-  sonda_release "$LEGACY" || muori "la sonda non è verde: cleanup non cancella niente"
+  smoke_release "$LEGACY" || muori "lo smoke test non è verde: cleanup non cancella niente"
 
   # Si cancella solo quello che è nell'archivio, voce per voce, e solo se la
   # copia ce l'ha: ciò che è comparso dopo resta dov'è e viene elencato. Le
@@ -944,9 +934,7 @@ EOF
     esac
   done
 
-  c="$(codice "$URL$HEALTH")"
-  say "$URL$HEALTH -> ${c:-000}"
-  verde "${c:-000}" || rosso "il sito non risponde dopo cleanup: la copia è in $LEGACY, e in ultima istanza c'è $ARCHIVIO"
+  sito_sano || rosso "il sito non è sano dopo cleanup: la copia è in $LEGACY, e in ultima istanza c'è $ARCHIVIO"
   say ""
   say "rete di sicurezza da qui:  ln -sfn '$LEGACY' '$CUR.new' && mv -Tf '$CUR.new' '$CUR'"
   say "poi: spostare i cron su $BASE/current/artisan, rotation-exclude: 000-legacy nel deploy.yml,"
