@@ -33,14 +33,15 @@
 #   challenged, html-page  definitivi: aspettare non li sistema
 #   qualunque altro        si ritenta, come mismatch
 #
-# Contratto del decisions-script (invariato rispetto al deploy):
+# Contratto del decisions-script: argomenti, stdin e uscita sono quelli che il
+# deploy usava già; diverso è solo che 404 e 000 non gli arrivano più.
 #   <script> smoke-marker <release>              corpo su stdin, stampa un verdetto
 #   <script> smoke-health <codice-health> <codice-home>
 #                                                esce non zero e stampa cosa è fallito
 #
 # Uscita: l'ultima riga è "release-smoke-test: <esito>", con esito fra online,
-# timeout, challenged, html-page, unhealthy, usage. Exit code 0 solo con online,
-# 2 per un uso sbagliato, 1 altrimenti.
+# timeout, challenged, html-page, unhealthy, unavailable (manca curl), usage.
+# Exit code 0 solo con online, 2 per un uso sbagliato, 1 altrimenti.
 
 # Il corpo è una subshell: variabili ed exit restano dentro la funzione, anche
 # quando a chiamarla è uno script concatenato.
@@ -108,7 +109,11 @@ release_smoke_test() (
     # senza una barra il nome verrebbe cercato nel PATH
     case "$decisions" in */*) ;; *) decisions="./$decisions" ;; esac
   fi
-  command -v curl > /dev/null 2>&1 || uso "manca curl: la misura ha bisogno di un client HTTP"
+  if ! command -v curl > /dev/null 2>&1; then
+    errore "manca curl: la misura ha bisogno di un client HTTP"
+    esito unavailable
+    exit 1
+  fi
   url="${url%/}"
 
   # Imposta codice e corpo della risposta al marcatore. stderr di curl non va
