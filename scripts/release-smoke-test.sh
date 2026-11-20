@@ -61,9 +61,13 @@
 # via SSH). Nome e contenuto del file stanno solo qui:
 #   release_smoke_marker scrivi DIR RELEASE   scrive DIR/__probe-release.php
 #   release_smoke_marker rimuovi DIR          lo rimuove, se c'è
+# Un sottocomando sconosciuto esce con 2.
+
+# il nome del file, che è anche il percorso servito sotto l'URL del sito
+RELEASE_SMOKE_MARKER='__probe-release.php'
 
 release_smoke_marker() (
-  file="$2/__probe-release.php"
+  file="$2/$RELEASE_SMOKE_MARKER"
   case "$1" in
     scrivi)
       # il nome finisce in una stringa PHP fra apici singoli
@@ -78,7 +82,7 @@ release_smoke_marker() (
 # Il corpo è una subshell: variabili ed exit restano dentro la funzione, anche
 # quando a chiamarla è uno script concatenato.
 release_smoke_test() (
-  marker_path='/__probe-release.php'
+  marker_path="/$RELEASE_SMOKE_MARKER"
   url=''
   release=''
   health_path='/up'

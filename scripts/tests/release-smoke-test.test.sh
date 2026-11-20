@@ -139,22 +139,8 @@ HEALTHY='"/up": [{"status": 200, "body": "ok"}], "/": [{"status": 200, "body": "
 
 # --- marcatore servito da PHP -------------------------------------------------
 
-# Subito dopo lo swap il web server serve già i file statici della Release nuova,
-# mentre PHP risolve ancora current nella Release precedente (realpath cache),
-# dove il marcatore PHP non esiste. Un marcatore statico darebbe match qui, e
-# health path e home misurerebbero il codice vecchio.
-test_static_marker_does_not_mean_online() {
-  serve '{"/release.txt": [{"status": 200, "body": "R1\n"}], "'"$MARKER"'": ['"$NOT_FOUND"'], '"$HEALTHY"'}'
-  smoke
-  expect_rc 1
-  expect_out '(verdetto: no-response, HTTP 404)'
-  expect_out 'release-smoke-test: timeout'
-  expect_not_requested /up
-  expect_not_requested /
-}
-
-# Con --marker-dir il marcatore lo scrive il module nella public/ della Release,
-# e il server di test lo serve come farebbe PHP: 404 finché il file non c'è.
+# PUBLIC è la public/ della Release che PHP risolve: il server di test serve il
+# marcatore da lì come farebbe PHP, con un 404 finché il file non c'è.
 PUBLIC="$WORK/public"
 fresh_public() {
   rm -rf "$PUBLIC"
@@ -164,6 +150,47 @@ PHP_MARKER='"'"$MARKER"'": [{"php": "'"$PUBLIC$MARKER"'"}]'
 
 expect_public_empty() {
   [ -z "$(ls -A "$PUBLIC")" ] || fail "nella public/ della Release è rimasto: $(ls -A "$PUBLIC")"
+}
+
+# Subito dopo lo swap il web server serve già i file statici della Release nuova,
+# mentre PHP risolve ancora current nella Release precedente (realpath cache),
+# dove il marcatore PHP non esiste. Un marcatore statico darebbe match qui, e
+# health path e home misurerebbero il codice vecchio.
+test_static_marker_does_not_mean_online() {
+  fresh_public
+  serve '{"/release.txt": [{"status": 200, "body": "R1\n"}], '"$PHP_MARKER"', '"$HEALTHY"'}'
+  smoke
+  expect_rc 1
+  expect_out '(verdetto: no-response, HTTP 404)'
+  expect_out 'release-smoke-test: timeout'
+  expect_not_requested /up
+  expect_not_requested /
+}
+
+# Il marcatore gestito da fuori, come fa il deploy con smoke-from 'runner': la
+# funzione arriva concatenata su stdin, come attraverso SSH.
+marker_from_stdin() {
+  { cat "$MODULE"; printf '%s\n' 'release_smoke_marker "$@"'; } | "$TEST_SHELL" -s -- "$@"
+}
+
+test_marker_managed_from_outside() {
+  fresh_public
+  serve '{'"$PHP_MARKER"', '"$HEALTHY"'}'
+  marker_from_stdin scrivi "$PUBLIC" R1 || fail "scrivi è uscito con $?"
+  smoke
+  expect_rc 0
+  expect_out 'release-smoke-test: online'
+  marker_from_stdin rimuovi "$PUBLIC" || fail "rimuovi è uscito con $?"
+  expect_public_empty
+  # rimuovere un marcatore che non c'è non è un errore: la pulizia è ripetibile
+  marker_from_stdin rimuovi "$PUBLIC" || fail "rimuovi senza marcatore è uscito con $?"
+}
+
+test_marker_rejects_unknown_command() {
+  fresh_public
+  OUT="$(marker_from_stdin sposta "$PUBLIC" 2>&1)"
+  RC=$?
+  expect_rc 2
 }
 
 test_marker_written_and_served_by_php() {
