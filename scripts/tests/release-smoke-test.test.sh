@@ -576,6 +576,138 @@ test_runner_switches_to_https_when_forced() {
   expect_requested 'https /'
 }
 
+# --- funzioni per chi usa il module da fuori (setup-releases) ----------------
+
+# Chiama una funzione del module come fa setup-releases: il module concatenato
+# prima di uno script con set -eu, tutto su stdin.
+from_script() {
+  fn="$1"
+  shift
+  OUT="$({ cat "$MODULE"; printf 'set -eu\n%s "$@"\n' "$fn"; } |
+    CURL_CA_BUNDLE="$WORK/cert.pem" "$TEST_SHELL" -s -- "$@" 2>&1)"
+  RC=$?
+}
+
+expect_exact_out() {
+  [ "$OUT" = "$1" ] || fail "output '$OUT', atteso '$1'"
+}
+
+test_https_switches_when_forced() {
+  serve '{"'"$MARKER"'": ['"$FORCED_HTTPS"']}'
+  from_script release_smoke_https "$URL/"
+  expect_rc 0
+  expect_exact_out "https://127.0.0.1:$PORT"
+}
+
+test_https_keeps_url_on_redirect_to_other_host() {
+  serve '{"'"$MARKER"'": [{"status": 301, "headers": {"Location": "https://altro.example'"$MARKER"'"}}]}'
+  from_script release_smoke_https "$URL"
+  expect_rc 0
+  expect_exact_out "$URL"
+}
+
+test_https_keeps_url_without_redirect() {
+  serve '{}'
+  from_script release_smoke_https "$URL"
+  expect_rc 0
+  expect_exact_out "$URL"
+}
+
+test_codice_without_redirects() {
+  serve '{"/": [{"status": 302, "headers": {"Location": "/login"}}], "/login": [{"status": 500}]}'
+  from_script release_smoke_codice "$URL/" none
+  expect_rc 0
+  expect_exact_out 302
+  expect_not_requested /login
+}
+
+test_codice_following_redirects() {
+  serve '{"/": [{"status": 302, "headers": {"Location": "/login"}}], "/login": [{"status": 500}]}'
+  from_script release_smoke_codice "$URL/" follow
+  expect_rc 0
+  expect_exact_out 500
+}
+
+test_codice_without_answer() {
+  serve '{"/": [{"drop": true}]}'
+  from_script release_smoke_codice "$URL/" none
+  expect_rc 0
+  case "$OUT" in *000) ;; *) fail "output '$OUT', atteso che finisca con 000" ;; esac
+}
+
+test_risposta_body_then_code_and_redirect() {
+  serve '{"/a": [{"status": 200, "body": "ciao"}], "/b": [{"status": 301, "headers": {"Location": "https://altro.example/b"}}]}'
+  from_script release_smoke_risposta "$URL/a"
+  expect_rc 0
+  expect_exact_out "ciao
+200 "
+  from_script release_smoke_risposta "$URL/b"
+  expect_exact_out "
+301 https://altro.example/b"
+}
+
+# il caso che le sonde del document root di setup-releases devono distinguere
+test_risposta_empty_body() {
+  serve '{"/a": [{"status": 200, "body": ""}]}'
+  from_script release_smoke_risposta "$URL/a"
+  expect_rc 0
+  expect_exact_out "
+200 "
+}
+
+# setup-releases chiama lo smoke test da uno script con set -eu e decide lui
+# cosa fare dopo: un fallimento non deve chiudere lo script chiamante.
+smoke_from_strict_script() {
+  OUT="$({ cat "$MODULE"; printf '%s\n' 'set -eu' \
+    'if release_smoke_test "$@"; then echo "chiamante: verde"; else echo "chiamante: rosso $?"; fi'; } |
+    CURL_CA_BUNDLE="$WORK/cert.pem" "$TEST_SHELL" -s -- --url "$URL" --release R1 \
+      --marker-dir "$PUBLIC" --timeout 2 --interval 1 --redirects none 2>&1)"
+  RC=$?
+}
+
+test_smoke_from_strict_script_online() {
+  fresh_public
+  serve '{'"$PHP_MARKER"', '"$HEALTHY"'}'
+  smoke_from_strict_script
+  expect_rc 0
+  expect_out 'release-smoke-test: online'
+  expect_out 'chiamante: verde'
+  expect_public_empty
+}
+
+test_smoke_from_strict_script_failing() {
+  fresh_public
+  serve '{"'"$MARKER"'": ['"$NOT_FOUND"'], '"$HEALTHY"'}'
+  smoke_from_strict_script
+  expect_rc 0
+  expect_out 'release-smoke-test: timeout'
+  expect_out 'chiamante: rosso 1'
+  expect_public_empty
+}
+
+test_salute_healthy() {
+  from_script release_smoke_salute /up 200 302
+  expect_rc 0
+}
+
+test_salute_health_path_not_200() {
+  from_script release_smoke_salute /up 302 200
+  expect_rc 1
+  expect_exact_out '/up=302'
+}
+
+test_salute_both_failing() {
+  from_script release_smoke_salute /up 404 500
+  expect_rc 1
+  expect_exact_out '/up=404 /=500'
+}
+
+test_salute_with_decisions() {
+  from_script release_smoke_salute /up 500 200 "$DECISIONS"
+  expect_rc 1
+  expect_exact_out 'salute=500'
+}
+
 # --- decisions-script --------------------------------------------------------
 
 test_decisions_never_receive_404() {

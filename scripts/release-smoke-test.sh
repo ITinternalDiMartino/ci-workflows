@@ -74,6 +74,20 @@
 #   release_smoke_marker scrivi DIR RELEASE   scrive DIR/__probe-release.php
 #   release_smoke_marker rimuovi DIR          lo rimuove, se c'è
 # Un sottocomando sconosciuto esce con 2.
+#
+# Le altre funzioni pubbliche, per chi arriva concatenato dopo il module
+# (setup-releases.sh): sono quelle che lo smoke test usa al suo interno, così
+# richieste, passaggio a https e criterio di salute restano uno solo.
+#   release_smoke_risposta URL           GET senza redirect: il corpo, poi una
+#                                        riga "<codice> <destinazione redirect>"
+#   release_smoke_codice URL [follow]    il solo codice HTTP (000 senza risposta)
+#   release_smoke_https URL              l'URL da usare: https:// se il dominio
+#                                        lo forza (stesso host e percorso)
+#   release_smoke_salute HEALTH_PATH CODICE_HEALTH CODICE_HOME [DECISIONS]
+#                                        falso, con cosa è fallito, se il sito
+#                                        non è sano
+# Lo script concatenato non deve ridefinire RELEASE_SMOKE_MARKER né le funzioni
+# release_smoke_*: sono gli unici nomi che il module mette in comune.
 
 # il nome del file, che è anche il percorso servito sotto l'URL del sito
 RELEASE_SMOKE_MARKER='__probe-release.php'
@@ -89,6 +103,65 @@ release_smoke_marker() (
     rimuovi) rm -f "$file" ;;
     *) return 2 ;;
   esac
+)
+
+# Una richiesta GET che non segue redirect: stampa il corpo, poi un'ultima riga
+# "<codice> <destinazione del redirect>" (vuota se non c'è redirect). Con -w
+# curl stampa 000 anche quando la richiesta non va a buon fine. stderr di curl
+# non va silenziato: quando non si connette, la sua riga è l'unica diagnosi.
+release_smoke_risposta() (
+  risposta="$(curl -sS --max-time 10 -w '\n%{http_code} %{redirect_url}' "$1" || true)"
+  ultima="$(printf '%s\n' "$risposta" | tail -n 1)"
+  case "${ultima%% *}" in [0-9][0-9][0-9]) ;; *) ultima='000 ' ;; esac
+  printf '%s\n%s\n' "$(printf '%s\n' "$risposta" | sed '$d')" "$ultima"
+)
+
+# Il solo codice HTTP di una GET, seguendo i redirect con 'follow' (default:
+# 'none'). 000 se non risponde.
+release_smoke_codice() (
+  if [ "${2:-none}" = follow ]; then
+    c="$(curl -sS -o /dev/null -w '%{http_code}' -L --max-time 20 "$1" || true)"
+  else
+    c="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$1" || true)"
+  fi
+  case "$c" in [0-9][0-9][0-9]) echo "$c" ;; *) echo 000 ;; esac
+)
+
+# APP_URL in http:// su un dominio che forza HTTPS: si passa a https:// solo se
+# il redirect porta allo stesso host e allo stesso percorso, cioè è il dominio e
+# non un altro sito. Argomenti: URL, codice, destinazione del redirect e
+# percorso richiesto. Stampa l'URL in https:// ed è vero se il passaggio vale.
+release_smoke_https_forzato() (
+  case "$1" in http://*) ;; *) return 1 ;; esac
+  case "$2" in 3??) ;; *) return 1 ;; esac
+  [ "$3" = "https://${1#http://}$4" ] || return 1
+  printf '%s\n' "https://${1#http://}"
+)
+
+# L'URL da usare per URL: la sua versione https:// se il dominio la forza,
+# altrimenti URL stesso, senza la barra finale.
+release_smoke_https() (
+  url="${1%/}"
+  ultima="$(release_smoke_risposta "$url/$RELEASE_SMOKE_MARKER" 2> /dev/null | tail -n 1)"
+  release_smoke_https_forzato "$url" "${ultima%% *}" "${ultima#* }" "/$RELEASE_SMOKE_MARKER" ||
+    printf '%s\n' "$url"
+)
+
+# Il verdetto su health path e home, dati i due codici: il decisions-script se
+# c'è, altrimenti il default (health path 200, home sotto 400). Stampa cosa è
+# fallito ed è falso se il sito non è sano.
+release_smoke_salute() (
+  if [ -n "${4:-}" ]; then
+    "$4" smoke-health "$2" "$3"
+    return
+  fi
+  fallito=''
+  [ "$2" = 200 ] || fallito="$1=$2"
+  [ "$3" -lt 400 ] || fallito="${fallito:+$fallito }/=$3"
+  [ -z "$fallito" ] || {
+    printf '%s\n' "$fallito"
+    return 1
+  }
 )
 
 # Il corpo è una subshell: variabili ed exit restano dentro la funzione, anche
@@ -192,28 +265,21 @@ release_smoke_test() (
     fi
   fi
 
-  # Imposta codice e corpo della risposta al marcatore. stderr di curl non va
-  # silenziato: quando non si connette, la sua riga è l'unica diagnosi. Con -w
-  # curl stampa 000 anche quando la richiesta non va a buon fine. Imposta anche
-  # redirect_verso, la destinazione di un eventuale redirect (vuota se non
-  # c'è): curl non lo segue mai, la decisione è del ciclo di attesa.
+  # Imposta codice e corpo della risposta al marcatore, e redirect_verso, la
+  # destinazione di un eventuale redirect (vuota se non c'è): curl non lo segue
+  # mai, la decisione è del ciclo di attesa.
   leggi_marcatore() {
-    risposta="$(curl -sS --max-time 10 -w '\n%{http_code} %{redirect_url}' "$url$marker_path" || true)"
+    risposta="$(release_smoke_risposta "$url$marker_path")"
     ultima_riga="$(printf '%s\n' "$risposta" | tail -n 1)"
     codice="${ultima_riga%% *}"
     redirect_verso="${ultima_riga#* }"
     corpo="$(printf '%s\n' "$risposta" | sed '$d')"
-    case "$codice" in [0-9][0-9][0-9]) ;; *) codice=000 redirect_verso='' ;; esac
   }
 
-  # APP_URL in http:// su un dominio che forza HTTPS: si passa a https:// solo
-  # se il redirect porta allo stesso host e allo stesso percorso, cioè è il
-  # dominio e non un altro sito. Vero se il passaggio è avvenuto.
+  # Vero se il passaggio a https:// è avvenuto.
   https_se_forzato() {
-    case "$url" in http://*) ;; *) return 1 ;; esac
-    case "$codice" in 3??) ;; *) return 1 ;; esac
-    [ "$redirect_verso" = "https://${url#http://}$marker_path" ] || return 1
-    url="https://${url#http://}"
+    nuovo="$(release_smoke_https_forzato "$url" "$codice" "$redirect_verso" "$marker_path")" || return 1
+    url="$nuovo"
     nota "http:// redirige su https://: smoke test su $url (conviene APP_URL=$url nel .env)"
     echo "release-smoke-test-url: $url"
   }
@@ -260,15 +326,6 @@ release_smoke_test() (
     else
       echo mismatch
     fi
-  }
-
-  codice_http() {
-    if [ "$redirects" = follow ]; then
-      c="$(curl -sS -o /dev/null -w '%{http_code}' -L --max-time 20 "$1" || true)"
-    else
-      c="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$1" || true)"
-    fi
-    case "$c" in [0-9][0-9][0-9]) echo "$c" ;; *) echo 000 ;; esac
   }
 
   # Polling del marcatore: dopo lo swap la cache dei path può far servire la
@@ -327,25 +384,14 @@ release_smoke_test() (
   # L'health path fa il boot completo del framework ma non attraversa routing,
   # middleware e manifest di Vite: per quello serve la home, che redirige al
   # login o risponde direttamente.
-  codice_health="$(codice_http "$url$health_path")"
-  codice_home="$(codice_http "$url/")"
+  codice_health="$(release_smoke_codice "$url$health_path" "$redirects")"
+  codice_home="$(release_smoke_codice "$url/" "$redirects")"
   echo "$health_path → $codice_health · / → $codice_home"
 
-  if [ -n "$decisions" ]; then
-    if ! falliti="$("$decisions" smoke-health "$codice_health" "$codice_home")"; then
-      errore "smoke test fallito: $falliti"
-      esito unhealthy
-      exit 1
-    fi
-  else
-    fallito=''
-    [ "$codice_health" = 200 ] || fallito="$health_path=$codice_health"
-    [ "$codice_home" -lt 400 ] || fallito="${fallito:+$fallito }/=$codice_home"
-    if [ -n "$fallito" ]; then
-      errore "smoke test fallito: $fallito"
-      esito unhealthy
-      exit 1
-    fi
+  if ! falliti="$(release_smoke_salute "$health_path" "$codice_health" "$codice_home" "$decisions")"; then
+    errore "smoke test fallito: $falliti"
+    esito unhealthy
+    exit 1
   fi
 
   esito online
