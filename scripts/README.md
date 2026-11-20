@@ -379,23 +379,29 @@ Il module di smoke test della Release: aspetta che PHP serva il marcatore della
 Release attesa, classifica ogni risposta in un verdetto, poi controlla health
 path e home. Il marcatore è un file PHP, `/__probe-release.php`, che stampa il nome
 della Release: finché la realpath cache di PHP risolve `current` nella Release
-precedente risponde 404, e lo smoke test aspetta. Con `--marker-dir` lo scrive e
-lo rimuove il module; senza, chi lo chiama (il deploy con `smoke-from: runner`,
-via SSH) con la funzione `release_smoke_marker`. Il deploy lo usa attraverso la composite action
-`.github/actions/release-smoke-test`, sul runner (`smoke-from: runner`) o inviato
-al server sulla connessione SSH già aperta (`smoke-from: server`). Opzioni,
+precedente risponde 404, e lo smoke test aspetta. Il marcatore lo scrive e lo
+rimuove solo il module, con due adapter: con `--marker-dir` nel filesystem dove
+gira, con `--marker-dir` e `--marker-host` sul server, inviandosi via ssh. Lo
+rimuove anche se lo smoke test fallisce o viene interrotto, e `--remove-marker`
+fa soltanto la rimozione, per chi deve pulire dopo un `SIGKILL`. Il deploy lo usa
+attraverso la composite action `.github/actions/release-smoke-test`, sul runner
+(`smoke-from: runner`, con `--marker-host target`) o inviato al server sulla
+connessione SSH già aperta (`smoke-from: server`); in entrambi i casi uno step
+finale dell'action esegue `--remove-marker` come rete di sicurezza. Opzioni,
 verdetti, redirect e contratto del `decisions-script` sono descritti in testa
 allo script. Come le sonde di `setup-releases.sh`, se `APP_URL` è in `http://` e
 il dominio forza HTTPS verso lo stesso host e percorso, il module passa a
 `https://` e consiglia di aggiornare `APP_URL`, in entrambe le modalità. Con
 `smoke-from: server` ogni altro redirect del marcatore ferma lo smoke test con
-l'esito `redirect`. L'action espone l'URL usato davvero come output `url`.
+l'esito `redirect`. L'action espone l'URL usato davvero come output `url`: sul
+runner lo scrive il module in `GITHUB_OUTPUT` (`--github`), dal server lo legge
+l'action nel log.
 
 Lo usa anche `setup-releases.sh`, che arriva al server concatenato dopo il
 module: `legacy` e `cleanup` chiamano `release_smoke_test`, e le sonde del document
 root usano le funzioni pubbliche del module per le richieste HTTP e per il
 passaggio a https. Nomi e contratti delle funzioni pubbliche
-(`release_smoke_marker`, `release_smoke_risposta`, `release_smoke_codice`,
+(`release_smoke_risposta`, `release_smoke_codice`,
 `release_smoke_https`, `release_smoke_salute`) sono in testa allo script.
 
 È POSIX sh e si usa allo stesso modo come script o come funzione, quando arriva
@@ -404,10 +410,13 @@ concatenato prima di un altro script su stdin:
 ```sh
 sh scripts/release-smoke-test.sh --url https://dominio.it --release 20261120-101500-abc1234
 { cat scripts/release-smoke-test.sh; echo 'release_smoke_test "$@"'; } | sh -s -- --url ... --release ...
+# dal proprio computer, con il marcatore sul server (solo come script)
+sh scripts/release-smoke-test.sh --url ... --release ... --marker-dir /home/utente/releases/<release>/public --marker-host utente@host
 ```
 
 La suite lo esercita solo dal suo interface, contro un server HTTP locale con
-risposte programmate, e gira in CI su ogni pull request (`check-workflows.yml`).
+risposte programmate e un `ssh` finto che esegue in locale il comando remoto, e
+gira in CI su ogni pull request (`check-workflows.yml`).
 In locale servono `python3`, `curl` e `openssl` (per il certificato con cui il
 server di test risponde anche in HTTPS):
 

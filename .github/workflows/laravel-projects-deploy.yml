@@ -17,7 +17,9 @@ name: Deploy
 # PHP. Il marcatore è un file PHP con un nome fisso da sonda
 # (/__probe-release.php) che stampa il nome della release: viene scritto nella
 # public/ della release nuova solo per la durata dello smoke test e rimosso alla
-# fine, anche se fallisce o viene interrotto. Un file statico non basterebbe: il
+# fine, anche se fallisce o viene interrotto: lo scrive e lo rimuove il module in
+# entrambe le modalità smoke-from, e uno step finale dell'action lo rimuove di
+# nuovo se il module è stato ucciso. Un file statico non basterebbe: il
 # web server lo serve appena current cambia, mentre PHP continua a risolvere
 # current nella release precedente finché la sua realpath cache non scade (120s
 # di default), e health path e home misurerebbero il codice vecchio. Fino ad
