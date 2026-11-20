@@ -13,7 +13,17 @@ name: Deploy
 # uno schema o a dati che non conosce. In quel caso il run lo dice e si ferma.
 # Il riepilogo stampa comunque il comando per rifare lo swap a mano.
 #
-# Smoke test: per default misura dal runner, che attraversa anche CDN e
+# Smoke test: la release è in linea solo quando a servire il suo marcatore è
+# PHP. Il marcatore è un file PHP con un nome fisso da sonda
+# (/__probe-release.php) che stampa il nome della release: viene scritto nella
+# public/ della release nuova solo per la durata dello smoke test e rimosso alla
+# fine, anche se fallisce o viene interrotto. Un file statico non basterebbe: il
+# web server lo serve appena current cambia, mentre PHP continua a risolvere
+# current nella release precedente finché la sua realpath cache non scade (120s
+# di default), e health path e home misurerebbero il codice vecchio. Fino ad
+# allora il marcatore risponde 404, che è sempre attesa.
+#
+# Per default lo smoke test misura dal runner, che attraversa anche CDN e
 # protezioni davanti al server. Dove una protezione anti-bot sfida gli IP dei
 # runner, smoke-from 'server' sposta la misura sulla connessione SSH già
 # aperta. I verdetti possono essere delegati a uno script del repository
@@ -139,10 +149,11 @@ on:
         type: string
       smoke-timeout:
         description: >-
-          Secondi di attesa perché il marcatore della release nuova compaia via
-          HTTP. Copre la cache dei path del web server, il cui default PHP è
-          120s: con smoke-from 'server' non c'è nessuna sfida da attendere e un
-          valore più basso è sufficiente
+          Secondi di attesa perché PHP serva il marcatore della release nuova.
+          Copre la realpath cache di PHP, che per default risolve current nella
+          release precedente fino a 120s dopo lo swap: il default di 150s la
+          copre per intero, e un valore più basso della cache può far fallire
+          un deploy sano
         required: false
         default: 150
         type: number
@@ -666,11 +677,6 @@ jobs:
           # -f segue il symlink: verifica che .env sia collegato e leggibile
           [ -f "$REL/.env" ] || { echo "la release non ha .env collegato"; exit 1; }
 
-          # marcatore servito via HTTP: è l'unico modo di sapere *quale* release
-          # sta rispondendo, e quindi di aspettare la realpath cache invece di
-          # sperare che sia già scaduta
-          basename "$REL" > "$REL/public/release.txt"
-
           # ln -sfn cancella e ricrea: per un istante current non esiste. Con un
           # symlink temporaneo più mv -T lo scambio è una rename(2), atomica.
           ln -sfn "$REL" "$CUR.new"
@@ -716,6 +722,7 @@ jobs:
         with:
           url: ${{ steps.appurl.outputs.url }}
           release: ${{ env.RELEASE }}
+          marker-dir: ${{ env.RELEASES_PATH }}/${{ env.RELEASE }}/public
           health-path: ${{ inputs.health-path }}
           smoke-from: ${{ inputs.smoke-from }}
           smoke-timeout: ${{ inputs.smoke-timeout }}
