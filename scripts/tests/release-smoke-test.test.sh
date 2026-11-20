@@ -310,14 +310,15 @@ test_runner_redirect_to_other_host_waits_as_before() {
   expect_no_out 'release-smoke-test: redirect'
 }
 
-test_runner_forced_https_waits_as_before() {
+test_runner_switches_to_https_when_forced() {
   serve '{"/release.txt": ['"$FORCED_HTTPS"'], "https /release.txt": [{"status": 200, "body": "R1"}], '"$HEALTHY"'}'
   smoke --redirects follow
-  expect_rc 1
-  expect_out '(verdetto: mismatch, HTTP 301)'
-  expect_out 'release-smoke-test: timeout'
-  expect_no_out 'release-smoke-test-url:'
-  expect_not_requested 'https /release.txt'
+  expect_rc 0
+  expect_out 'release-smoke-test: online'
+  expect_out "conviene APP_URL=https://127.0.0.1:$PORT nel .env"
+  expect_out "release-smoke-test-url: https://127.0.0.1:$PORT"
+  expect_requested 'https /up'
+  expect_requested 'https /'
 }
 
 # --- decisions-script --------------------------------------------------------

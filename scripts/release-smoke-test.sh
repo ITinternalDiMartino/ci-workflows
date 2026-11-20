@@ -33,14 +33,14 @@
 #   challenged, html-page  definitivi: aspettare non li sistema
 #   qualunque altro        si ritenta, come mismatch
 #
-# Redirect sul marcatore, solo con --redirects none. Se --url è in http:// e il
-# marcatore redirige allo stesso host e allo stesso percorso in https://, il
-# module passa a https:// per tutto il resto (marcatore, health path, home),
+# Redirect sul marcatore. Se --url è in http:// e il marcatore redirige allo
+# stesso host e allo stesso percorso in https://, il module passa a https://
+# per tutto il resto (marcatore, health path, home), con qualunque --redirects:
 # lascia una nota che consiglia di aggiornare APP_URL e stampa
-# "release-smoke-test-url: <url>". Un redirect che resta dopo questo passaggio
-# (altro host o altro percorso) è definitivo, con esito redirect, e non arriva
-# al decisions-script. Con --redirects follow il redirect del marcatore si
-# classifica come ogni altra risposta, come prima.
+# "release-smoke-test-url: <url>". Con --redirects none, un redirect che resta
+# dopo questo passaggio (altro host o altro percorso) è definitivo, con esito
+# redirect, e non arriva al decisions-script. Con --redirects follow quel
+# redirect si classifica come ogni altra risposta, come prima.
 #
 # Contratto del decisions-script: argomenti, stdin e uscita sono quelli che il
 # deploy usava già; diverso è solo che 404 e 000 non gli arrivano più.
@@ -150,10 +150,8 @@ release_smoke_test() (
 
   # APP_URL in http:// su un dominio che forza HTTPS: si passa a https:// solo
   # se il redirect porta allo stesso host e allo stesso percorso, cioè è il
-  # dominio e non un altro sito. Solo senza redirect seguiti: con 'follow' il
-  # comportamento resta quello di prima. Vero se il passaggio è avvenuto.
+  # dominio e non un altro sito. Vero se il passaggio è avvenuto.
   https_se_forzato() {
-    [ "$redirects" = none ] || return 1
     case "$url" in http://*) ;; *) return 1 ;; esac
     case "$codice" in 3??) ;; *) return 1 ;; esac
     [ "$redirect_verso" = "https://${url#http://}$marker_path" ] || return 1

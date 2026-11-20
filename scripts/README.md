@@ -373,11 +373,11 @@ health path e home. Il deploy lo usa attraverso la composite action
 `.github/actions/release-smoke-test`, sul runner (`smoke-from: runner`) o inviato
 al server sulla connessione SSH già aperta (`smoke-from: server`). Opzioni,
 verdetti, redirect e contratto del `decisions-script` sono descritti in testa
-allo script. Con `smoke-from: server`, come le sonde di `setup-releases.sh`, se
-`APP_URL` è in `http://` e il dominio forza HTTPS verso lo stesso host e
-percorso, il module passa a `https://` e consiglia di aggiornare `APP_URL`; ogni
-altro redirect del marcatore ferma lo smoke test con l'esito `redirect`.
-L'action espone l'URL usato davvero come output `url`.
+allo script. Come le sonde di `setup-releases.sh`, se `APP_URL` è in `http://` e
+il dominio forza HTTPS verso lo stesso host e percorso, il module passa a
+`https://` e consiglia di aggiornare `APP_URL`, in entrambe le modalità. Con
+`smoke-from: server` ogni altro redirect del marcatore ferma lo smoke test con
+l'esito `redirect`. L'action espone l'URL usato davvero come output `url`.
 
 È POSIX sh e si usa allo stesso modo come script o come funzione, quando arriva
 concatenato prima di un altro script su stdin:

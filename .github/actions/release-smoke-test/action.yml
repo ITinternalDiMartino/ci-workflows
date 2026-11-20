@@ -38,8 +38,8 @@ inputs:
 outputs:
   url:
     description: >-
-      URL usato davvero dallo smoke test: quello di 'url', oppure, con
-      smoke-from 'server', la sua versione https:// se il dominio forza HTTPS
+      URL usato davvero dallo smoke test: quello di 'url', oppure la sua versione
+      https:// se il dominio forza HTTPS
     value: ${{ steps.smoke.outputs.url }}
 
 runs:
