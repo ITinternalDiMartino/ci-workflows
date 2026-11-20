@@ -189,6 +189,87 @@ test_timeout_without_answer() {
   expect_out '(verdetto: no-response, HTTP 000)'
 }
 
+test_cloudflare_challenge_stops() {
+  serve '{"/release.txt": [{"status": 403, "body": "<!DOCTYPE html><html><head><title>Just a moment...</title></head><body><script src=\"/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1\"></script></body></html>"}], '"$HEALTHY"'}'
+  smoke --timeout 60
+  expect_rc 1
+  expect_out 'una protezione anti-bot risponde al posto del marcatore'
+  expect_out "prova smoke-from 'server'"
+  expect_out 'release-smoke-test: challenged'
+  expect_not_requested /up
+}
+
+# una firma per protezione: ognuna basta da sola, su 403 o su 503
+test_challenge_signatures() {
+  for page in \
+    '<html><title>Attention Required! | Cloudflare</title></html>' \
+    '<html><title>Sucuri WebSite Firewall - Access Denied</title></html>' \
+    '<html><script src="/_Incapsula_Resource?SWJIYLWA=1"></script></html>' \
+    '<html><body>Access denied by Imunify360 bot-protection</body></html>' \
+    '<html><title>DDoS-Guard</title></html>'; do
+    for status in 403 503; do
+      body="$(printf '%s' "$page" | sed 's/"/\\"/g')"
+      serve '{"/release.txt": [{"status": '"$status"', "body": "'"$body"'"}], '"$HEALTHY"'}'
+      smoke --timeout 60
+      expect_rc 1
+      expect_out 'release-smoke-test: challenged'
+    done
+  done
+}
+
+# un 403 senza firme di challenge non è definitivo: può essere un permesso
+# sbagliato che la Release nuova corregge
+test_forbidden_without_challenge_waits() {
+  serve '{"/release.txt": [{"status": 403, "body": "<html><title>403 Forbidden</title></html>"}], '"$HEALTHY"'}'
+  smoke
+  expect_rc 1
+  expect_out '(verdetto: mismatch, HTTP 403)'
+  expect_out 'release-smoke-test: timeout'
+}
+
+# la firma conta solo su 403 e 503: con 200 una pagina che la cita non è una challenge
+test_challenge_signature_on_200_is_not_challenged() {
+  serve '{"/release.txt": [{"status": 200, "body": "Just a moment..."}], '"$HEALTHY"'}'
+  smoke
+  expect_rc 1
+  expect_no_out 'release-smoke-test: challenged'
+  expect_out 'release-smoke-test: timeout'
+}
+
+test_html_page_with_200_stops() {
+  serve '{"/release.txt": [{"status": 200, "body": "<!DOCTYPE html>\n<html><head><title>Default vhost</title></head></html>"}], '"$HEALTHY"'}'
+  smoke --timeout 60
+  expect_rc 1
+  expect_out 'risponde una pagina HTML invece del marcatore: questo vhost non serve la Release'
+  expect_out 'release-smoke-test: html-page'
+  expect_not_requested /up
+}
+
+# senza doctype e con il tag <html> che va a capo prima degli attributi
+test_html_page_without_doctype_stops() {
+  serve '{"/release.txt": [{"status": 200, "body": "<html\n  lang=\"it\"><body>Index of /</body></html>"}], '"$HEALTHY"'}'
+  smoke --timeout 60
+  expect_rc 1
+  expect_out 'release-smoke-test: html-page'
+}
+
+# un frammento HTML senza <html>, come la pagina di default di certi pannelli
+test_html_fragment_stops() {
+  serve '{"/release.txt": [{"status": 200, "body": "<body><h1>Sito in costruzione</h1></body>"}], '"$HEALTHY"'}'
+  smoke --timeout 60
+  expect_rc 1
+  expect_out 'release-smoke-test: html-page'
+}
+
+# la pagina 404 della Release precedente è attesa, mai html-page
+test_html_404_waits() {
+  serve '{"/release.txt": ['"$NOT_FOUND"', {"status": 200, "body": "R1"}], '"$HEALTHY"'}'
+  smoke --timeout 10
+  expect_rc 0
+  expect_no_out 'html-page'
+  expect_out 'marcatore: no-response (HTTP 404)'
+}
+
 # --- health path e home -----------------------------------------------------
 
 test_health_path_failure() {
@@ -285,6 +366,25 @@ test_decisions_challenged_stops() {
   expect_rc 1
   expect_out 'una protezione anti-bot risponde al posto del marcatore'
   expect_out 'release-smoke-test: challenged'
+}
+
+# il decisions-script ha la precedenza: dove il default direbbe html-page o
+# challenged, decide lui
+test_decisions_override_default() {
+  cat > "$WORK/sempre-match.sh" <<'EOF'
+#!/bin/sh
+[ "$1" = smoke-marker ] && echo match
+exit 0
+EOF
+  chmod +x "$WORK/sempre-match.sh"
+  serve '{"/release.txt": [{"status": 200, "body": "<!DOCTYPE html><html>R1</html>"}], '"$HEALTHY"'}'
+  smoke --decisions "$WORK/sempre-match.sh"
+  expect_rc 0
+  expect_out 'release-smoke-test: online'
+  serve '{"/release.txt": [{"status": 403, "body": "<title>Just a moment...</title>"}], '"$HEALTHY"'}'
+  smoke --decisions "$WORK/sempre-match.sh"
+  expect_rc 0
+  expect_out 'release-smoke-test: online'
 }
 
 test_decisions_health_failure() {

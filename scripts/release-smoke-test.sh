@@ -27,11 +27,14 @@
 # Verdetti sul marcatore. Un 404 o una risposta assente (codice 000) sono sempre
 # attesa, con verdetto no-response, e non arrivano mai al decisions-script: il
 # 404 è la pagina della Release precedente mentre la cache si aggiorna. Le altre
-# risposte le classifica il default o il decisions-script:
+# risposte le classifica il decisions-script, se c'è, altrimenti il default:
 #   match                  la Release attesa è in linea: si passa alla salute
 #   mismatch, no-response  si ritenta fino al timeout
 #   challenged, html-page  definitivi: aspettare non li sistema
 #   qualunque altro        si ritenta, come mismatch
+# Il default dà challenged a un 403 o 503 con una pagina di challenge (firme in
+# pagina_di_challenge), html-page a una pagina HTML servita con 200, match o
+# mismatch confrontando il corpo con la Release, no-response a un corpo vuoto.
 #
 # Contratto del decisions-script: argomenti, stdin e uscita sono quelli che il
 # deploy usava già; diverso è solo che 404 e 000 non gli arrivano più.
@@ -126,11 +129,40 @@ release_smoke_test() (
     case "$codice" in [0-9][0-9][0-9]) ;; *) codice=000 ;; esac
   }
 
+  # Firme delle pagine di challenge delle protezioni anti-bot più comuni, cercate
+  # senza distinguere maiuscole nel corpo di un 403 o 503:
+  #   Cloudflare      "Just a moment...", /cdn-cgi/challenge-platform/,
+  #                   "Attention Required! | Cloudflare"
+  #   Sucuri          "Sucuri WebSite Firewall"
+  #   Imperva         _Incapsula_Resource
+  #   Imunify360      "imunify360" (bot-protection dei cPanel)
+  #   DDoS-Guard      "ddos-guard"
+  pagina_di_challenge() {
+    printf '%s' "$corpo" | grep -qiE \
+      'just a moment\.\.\.|/cdn-cgi/challenge-platform/|attention required! \| cloudflare|sucuri website firewall|_incapsula_resource|imunify360|ddos-guard'
+  }
+
   classifica() {
     if [ -n "$decisions" ]; then
       printf '%s' "$corpo" | "$decisions" smoke-marker "$release" || true
       return
     fi
+    case "$codice" in
+      403 | 503)
+        if pagina_di_challenge; then
+          echo challenged
+          return
+        fi
+        ;;
+      # il marcatore è testo semplice: una pagina HTML con 200 è il vhost che
+      # serve altro, non una Release vecchia che sta per cambiare
+      200)
+        if printf '%s' "$corpo" | grep -qiE '<!doctype html|<(html|head|body)([[:space:]>]|$)'; then
+          echo html-page
+          return
+        fi
+        ;;
+    esac
     servita="$(printf '%s' "$corpo" | tr -d '[:space:]')"
     if [ -z "$servita" ]; then
       echo no-response
@@ -173,7 +205,7 @@ release_smoke_test() (
         exit 1
         ;;
       html-page)
-        errore "risponde una pagina HTML invece del marcatore: ${marker_path#/} non è servito su questo vhost"
+        errore "risponde una pagina HTML invece del marcatore: questo vhost non serve la Release ($url non punta alla public/ della Release, o ${marker_path#/} non c'è)"
         esito html-page
         exit 1
         ;;
