@@ -35,10 +35,18 @@ inputs:
     required: false
     default: ""
 
+outputs:
+  url:
+    description: >-
+      URL usato davvero dallo smoke test: quello di 'url', oppure, con
+      smoke-from 'server', la sua versione https:// se il dominio forza HTTPS
+    value: ${{ steps.smoke.outputs.url }}
+
 runs:
   using: composite
   steps:
     - name: Smoke test
+      id: smoke
       shell: bash
       env:
         URL: ${{ inputs.url }}
@@ -61,12 +69,24 @@ runs:
         esac
         echo "misura da: $SMOKE_FROM · URL sotto test: $URL"
 
+        # L'output url è l'URL usato davvero: se il dominio forza HTTPS il module
+        # passa a https:// e lo annuncia con una riga 'release-smoke-test-url:'.
+        # Si scrive anche quando lo smoke test fallisce: il riepilogo lo mostra.
+        set -o pipefail
+        LOG="$RUNNER_TEMP/release-smoke-test.log"
+        pubblica_url() {
+          used="$(sed -n 's/^release-smoke-test-url: //p' "$LOG" | tail -n 1)"
+          echo "url=${used:-$URL}" >> "$GITHUB_OUTPUT"
+        }
+
         if [ "$SMOKE_FROM" = "runner" ]; then
           args=(--url "$URL" --release "$RELEASE" --health-path "$HEALTH_PATH"
             --timeout "$SMOKE_TIMEOUT" --redirects follow --github)
           [ -z "$DECISIONS" ] || args+=(--decisions "$DECISIONS")
-          sh "$MODULE" "${args[@]}"
-          exit
+          rc=0
+          sh "$MODULE" "${args[@]}" | tee "$LOG" || rc=$?
+          pubblica_url
+          exit "$rc"
         fi
 
         # Senza un client HTTP sul server la modalità 'server' produrrebbe
@@ -93,8 +113,13 @@ runs:
 
         # Il module arriva su stdin e viene chiamato come funzione, come quando è
         # concatenato a setup-releases. Nessun redirect seguito: un redirect fuori
-        # host riporterebbe la misura là da dove si è voluta spostare.
+        # host riporterebbe la misura là da dove si è voluta spostare. Il module
+        # passa da solo a https:// se il dominio lo forza, e ferma lo smoke test
+        # con l'esito redirect per ogni altro redirect del marcatore.
         remote="sh -s -- --url $(q "$URL") --release $(q "$RELEASE") --health-path $(q "$HEALTH_PATH")"
         remote="$remote --timeout $(q "$SMOKE_TIMEOUT") --redirects none --github"
         [ -z "$remote_decisions" ] || remote="$remote --decisions $(q "$remote_decisions")"
-        { cat "$MODULE"; printf '%s\n' 'release_smoke_test "$@"'; } | ssh target "$remote"
+        rc=0
+        { cat "$MODULE"; printf '%s\n' 'release_smoke_test "$@"'; } | ssh target "$remote" | tee "$LOG" || rc=$?
+        pubblica_url
+        exit "$rc"

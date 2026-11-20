@@ -22,7 +22,10 @@ name: Deploy
 # dello smoke test, perché gira accanto al module. Lo smoke test è il module
 # scripts/release-smoke-test.sh, lo stesso per entrambe le modalità: un 404 o
 # una risposta assente sul marcatore sono sempre attesa e non arrivano mai al
-# decisions-script.
+# decisions-script. Con smoke-from 'server' e APP_URL in http:// su un dominio
+# che forza HTTPS, il module passa a https:// (stesso host, stesso percorso) e
+# lo segnala; ogni altro redirect del marcatore ferma subito lo smoke test con
+# l'esito redirect. L'output url riporta l'URL usato davvero.
 #
 # Layout atteso sul server:
 #   <RELEASES_PATH>/<release>/   una directory per release, create da qui
@@ -178,7 +181,7 @@ on:
         description: "Path della release che era attiva prima dello swap"
         value: ${{ jobs.deploy.outputs.previous }}
       url:
-        description: "APP_URL letto dalla shared e usato per lo smoke test"
+        description: "URL usato dallo smoke test: APP_URL letto dalla shared, o la sua versione https:// se il dominio forza HTTPS"
         value: ${{ jobs.deploy.outputs.url }}
       migrations-applied:
         description: "'true' se questo deploy ha applicato migrazioni o eseguito post-migrate-commands, cioè se il rollback del solo codice non è sicuro"
@@ -365,7 +368,7 @@ jobs:
     environment: ${{ inputs.environment }}
     outputs:
       previous: ${{ steps.activate.outputs.prev }}
-      url: ${{ steps.appurl.outputs.url }}
+      url: ${{ steps.smoke.outputs.url || steps.appurl.outputs.url }}
       migrations-applied: ${{ steps.migrations.outputs.applied == 'true' || steps.post_migrate.outputs.ran == 'true' }}
     env:
       RELEASE: ${{ needs.build.outputs.release }}
@@ -856,7 +859,7 @@ jobs:
       - name: Summary
         if: always()
         env:
-          URL: ${{ steps.appurl.outputs.url }}
+          URL: ${{ steps.smoke.outputs.url || steps.appurl.outputs.url }}
           PREV: ${{ steps.activate.outputs.prev }}
           ACTIVATE_OUTCOME: ${{ steps.activate.outcome }}
           ROLLBACK_OUTCOME: ${{ steps.rollback.outcome }}
