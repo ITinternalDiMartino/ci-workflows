@@ -49,6 +49,15 @@
 # pagina_di_challenge), html-page a una pagina HTML servita con 200, match o
 # mismatch confrontando il corpo con la Release, no-response a un corpo vuoto.
 #
+# Redirect sul marcatore. Se --url è in http:// e il marcatore redirige allo
+# stesso host e allo stesso percorso in https://, il module passa a https://
+# per tutto il resto (marcatore, health path, home), con qualunque --redirects:
+# lascia una nota che consiglia di aggiornare APP_URL e stampa
+# "release-smoke-test-url: <url>". Con --redirects none, un redirect che resta
+# dopo questo passaggio (altro host o altro percorso) è definitivo, con esito
+# redirect, e non arriva al decisions-script. Con --redirects follow quel
+# redirect si classifica come ogni altra risposta, come prima.
+#
 # Contratto del decisions-script: argomenti, stdin e uscita sono quelli che il
 # deploy usava già; diverso è solo che 404 e 000 non gli arrivano più.
 #   <script> smoke-marker <release>              corpo su stdin, stampa un verdetto
@@ -56,9 +65,9 @@
 #                                                esce non zero e stampa cosa è fallito
 #
 # Uscita: l'ultima riga è "release-smoke-test: <esito>", con esito fra online,
-# timeout, challenged, html-page, unhealthy, unavailable (manca curl o il
-# marcatore non si può scrivere), usage. Exit code 0 solo con online, 2 per un
-# uso sbagliato, 1 altrimenti.
+# timeout, challenged, html-page, redirect, unhealthy, unavailable (manca curl o
+# il marcatore non si può scrivere), usage. Exit code 0 solo con online, 2 per
+# un uso sbagliato, 1 altrimenti.
 #
 # Il marcatore, per chi lo gestisce da fuori (il deploy con smoke-from 'runner',
 # via SSH). Nome e contenuto del file stanno solo qui:
@@ -101,6 +110,14 @@ release_smoke_test() (
       echo "::error::$*"
     else
       echo "errore: $*"
+    fi
+  }
+
+  nota() {
+    if [ -n "$github" ]; then
+      echo "::notice::$*"
+    else
+      echo "nota: $*"
     fi
   }
 
@@ -177,12 +194,28 @@ release_smoke_test() (
 
   # Imposta codice e corpo della risposta al marcatore. stderr di curl non va
   # silenziato: quando non si connette, la sua riga è l'unica diagnosi. Con -w
-  # curl stampa 000 anche quando la richiesta non va a buon fine.
+  # curl stampa 000 anche quando la richiesta non va a buon fine. Imposta anche
+  # redirect_verso, la destinazione di un eventuale redirect (vuota se non
+  # c'è): curl non lo segue mai, la decisione è del ciclo di attesa.
   leggi_marcatore() {
-    risposta="$(curl -sS --max-time 10 -w '\n%{http_code}' "$url$marker_path" || true)"
-    codice="$(printf '%s\n' "$risposta" | tail -n 1)"
+    risposta="$(curl -sS --max-time 10 -w '\n%{http_code} %{redirect_url}' "$url$marker_path" || true)"
+    ultima_riga="$(printf '%s\n' "$risposta" | tail -n 1)"
+    codice="${ultima_riga%% *}"
+    redirect_verso="${ultima_riga#* }"
     corpo="$(printf '%s\n' "$risposta" | sed '$d')"
-    case "$codice" in [0-9][0-9][0-9]) ;; *) codice=000 ;; esac
+    case "$codice" in [0-9][0-9][0-9]) ;; *) codice=000 redirect_verso='' ;; esac
+  }
+
+  # APP_URL in http:// su un dominio che forza HTTPS: si passa a https:// solo
+  # se il redirect porta allo stesso host e allo stesso percorso, cioè è il
+  # dominio e non un altro sito. Vero se il passaggio è avvenuto.
+  https_se_forzato() {
+    case "$url" in http://*) ;; *) return 1 ;; esac
+    case "$codice" in 3??) ;; *) return 1 ;; esac
+    [ "$redirect_verso" = "https://${url#http://}$marker_path" ] || return 1
+    url="https://${url#http://}"
+    nota "http:// redirige su https://: smoke test su $url (conviene APP_URL=$url nel .env)"
+    echo "release-smoke-test-url: $url"
   }
 
   # Firme delle pagine di challenge delle protezioni anti-bot più comuni, cercate
@@ -244,6 +277,21 @@ release_smoke_test() (
   fine=$(($(date +%s) + timeout))
   while :; do
     leggi_marcatore
+    # il passaggio a https:// avviene una volta sola: si rilegge subito
+    if https_se_forzato; then
+      leggi_marcatore
+    fi
+    # Senza redirect seguiti, uno che resta dopo il passaggio a https:// porta
+    # fuori dall'URL sotto test: aspettare non lo sposta.
+    if [ "$redirects" = none ]; then
+      case "$codice" in
+        3??)
+          errore "il marcatore riceve un redirect (HTTP $codice verso ${redirect_verso:-destinazione assente}): con smoke-from 'server' i redirect non si seguono. Controlla APP_URL ($url)"
+          esito redirect
+          exit 1
+          ;;
+      esac
+    fi
     case "$codice" in
       404 | 000) verdetto=no-response ;;
       *) verdetto="$(classifica)" ;;

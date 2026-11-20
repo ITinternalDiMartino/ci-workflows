@@ -10,7 +10,7 @@
 #   TEST_SHELL  la shell con cui lanciare il module (default: dash se c'è,
 #               altrimenti sh): il module deve girare su una shell POSIX minima
 #
-# Dipendenze: python3, curl.
+# Dipendenze: python3, curl, openssl.
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -32,6 +32,16 @@ stop_server() {
 trap 'stop_server; rm -rf "$WORK"' EXIT
 trap 'exit 130' INT TERM HUP
 
+# Certificato autofirmato per 127.0.0.1: il server di test risponde anche in
+# HTTPS sulla stessa porta, e curl si fida di questo certificato attraverso
+# CURL_CA_BUNDLE, senza toccare il module.
+if ! openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=127.0.0.1' \
+  -addext 'subjectAltName=IP:127.0.0.1' \
+  -keyout "$WORK/key.pem" -out "$WORK/cert.pem" > /dev/null 2>&1; then
+  echo "openssl non ha generato il certificato di test" >&2
+  exit 1
+fi
+
 PASSED=0
 FAILED=0
 CURRENT_FAILED=''
@@ -48,7 +58,8 @@ serve() {
   printf '%s\n' "$1" > "$WORK/routes.json"
   rm -f "$WORK/port" "$WORK/requests"
   : > "$WORK/requests"
-  python3 -I "$SERVER" "$WORK/routes.json" "$WORK/port" "$WORK/requests" &
+  python3 -I "$SERVER" "$WORK/routes.json" "$WORK/port" "$WORK/requests" \
+    "$WORK/cert.pem" "$WORK/key.pem" &
   SERVER_PID=$!
   i=0
   while [ ! -s "$WORK/port" ]; do
@@ -59,14 +70,15 @@ serve() {
     fi
     sleep 0.05
   done
-  URL="http://127.0.0.1:$(cat "$WORK/port")"
+  PORT="$(cat "$WORK/port")"
+  URL="http://127.0.0.1:$PORT"
 }
 
 # Lancia il module contro il server, con un'attesa breve fra un tentativo e
 # l'altro. Gli argomenti si aggiungono (e possono sostituire) quelli di default.
 smoke() {
-  OUT="$("$TEST_SHELL" "$MODULE" --url "$URL" --release R1 --health-path /up \
-    --timeout 2 --interval 1 "$@" 2>&1)"
+  OUT="$(CURL_CA_BUNDLE="$WORK/cert.pem" "$TEST_SHELL" "$MODULE" --url "$URL" \
+    --release R1 --health-path /up --timeout 2 --interval 1 "$@" 2>&1)"
   RC=$?
 }
 
@@ -364,7 +376,7 @@ test_timeout_without_answer() {
 }
 
 test_cloudflare_challenge_stops() {
-  serve '{"/release.txt": [{"status": 403, "body": "<!DOCTYPE html><html><head><title>Just a moment...</title></head><body><script src=\"/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1\"></script></body></html>"}], '"$HEALTHY"'}'
+  serve '{"'"$MARKER"'": [{"status": 403, "body": "<!DOCTYPE html><html><head><title>Just a moment...</title></head><body><script src=\"/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1\"></script></body></html>"}], '"$HEALTHY"'}'
   smoke --timeout 60
   expect_rc 1
   expect_out 'una protezione anti-bot risponde al posto del marcatore'
@@ -383,7 +395,7 @@ test_challenge_signatures() {
     '<html><title>DDoS-Guard</title></html>'; do
     for status in 403 503; do
       body="$(printf '%s' "$page" | sed 's/"/\\"/g')"
-      serve '{"/release.txt": [{"status": '"$status"', "body": "'"$body"'"}], '"$HEALTHY"'}'
+      serve '{"'"$MARKER"'": [{"status": '"$status"', "body": "'"$body"'"}], '"$HEALTHY"'}'
       smoke --timeout 60
       expect_rc 1
       expect_out 'release-smoke-test: challenged'
@@ -394,7 +406,7 @@ test_challenge_signatures() {
 # un 403 senza firme di challenge non è definitivo: può essere un permesso
 # sbagliato che la Release nuova corregge
 test_forbidden_without_challenge_waits() {
-  serve '{"/release.txt": [{"status": 403, "body": "<html><title>403 Forbidden</title></html>"}], '"$HEALTHY"'}'
+  serve '{"'"$MARKER"'": [{"status": 403, "body": "<html><title>403 Forbidden</title></html>"}], '"$HEALTHY"'}'
   smoke
   expect_rc 1
   expect_out '(verdetto: mismatch, HTTP 403)'
@@ -403,7 +415,7 @@ test_forbidden_without_challenge_waits() {
 
 # la firma conta solo su 403 e 503: con 200 una pagina che la cita non è una challenge
 test_challenge_signature_on_200_is_not_challenged() {
-  serve '{"/release.txt": [{"status": 200, "body": "Just a moment..."}], '"$HEALTHY"'}'
+  serve '{"'"$MARKER"'": [{"status": 200, "body": "Just a moment..."}], '"$HEALTHY"'}'
   smoke
   expect_rc 1
   expect_no_out 'release-smoke-test: challenged'
@@ -411,7 +423,7 @@ test_challenge_signature_on_200_is_not_challenged() {
 }
 
 test_html_page_with_200_stops() {
-  serve '{"/release.txt": [{"status": 200, "body": "<!DOCTYPE html>\n<html><head><title>Default vhost</title></head></html>"}], '"$HEALTHY"'}'
+  serve '{"'"$MARKER"'": [{"status": 200, "body": "<!DOCTYPE html>\n<html><head><title>Default vhost</title></head></html>"}], '"$HEALTHY"'}'
   smoke --timeout 60
   expect_rc 1
   expect_out 'risponde una pagina HTML invece del marcatore: questo vhost non serve la Release'
@@ -421,7 +433,7 @@ test_html_page_with_200_stops() {
 
 # senza doctype e con il tag <html> che va a capo prima degli attributi
 test_html_page_without_doctype_stops() {
-  serve '{"/release.txt": [{"status": 200, "body": "<html\n  lang=\"it\"><body>Index of /</body></html>"}], '"$HEALTHY"'}'
+  serve '{"'"$MARKER"'": [{"status": 200, "body": "<html\n  lang=\"it\"><body>Index of /</body></html>"}], '"$HEALTHY"'}'
   smoke --timeout 60
   expect_rc 1
   expect_out 'release-smoke-test: html-page'
@@ -429,7 +441,7 @@ test_html_page_without_doctype_stops() {
 
 # un frammento HTML senza <html>, come la pagina di default di certi pannelli
 test_html_fragment_stops() {
-  serve '{"/release.txt": [{"status": 200, "body": "<body><h1>Sito in costruzione</h1></body>"}], '"$HEALTHY"'}'
+  serve '{"'"$MARKER"'": [{"status": 200, "body": "<body><h1>Sito in costruzione</h1></body>"}], '"$HEALTHY"'}'
   smoke --timeout 60
   expect_rc 1
   expect_out 'release-smoke-test: html-page'
@@ -437,7 +449,7 @@ test_html_fragment_stops() {
 
 # la pagina 404 della Release precedente è attesa, mai html-page
 test_html_404_waits() {
-  serve '{"/release.txt": ['"$NOT_FOUND"', {"status": 200, "body": "R1"}], '"$HEALTHY"'}'
+  serve '{"'"$MARKER"'": ['"$NOT_FOUND"', {"status": 200, "body": "R1"}], '"$HEALTHY"'}'
   smoke --timeout 10
   expect_rc 0
   expect_no_out 'html-page'
@@ -483,6 +495,85 @@ test_no_redirects_on_home() {
   expect_rc 0
   expect_out '/ → 302'
   expect_not_requested /login
+}
+
+# --- redirect del marcatore -------------------------------------------------
+
+# Il dominio forza HTTPS: http:// risponde 301 verso lo stesso host e lo stesso
+# percorso in https://, che serve la Release.
+FORCED_HTTPS='{"status": 301, "body": "Moved Permanently", "headers": {"Location": "https://127.0.0.1:{port}'"$MARKER"'"}}'
+
+test_server_switches_to_https_when_forced() {
+  serve '{"'"$MARKER"'": ['"$FORCED_HTTPS"'], "https '"$MARKER"'": [{"status": 200, "body": "R1"}], '"$HEALTHY"'}'
+  smoke --redirects none
+  expect_rc 0
+  expect_out 'release-smoke-test: online'
+  expect_requested "https $MARKER"
+  expect_requested 'https /up'
+  expect_requested 'https /'
+  expect_out "conviene APP_URL=https://127.0.0.1:$PORT nel .env"
+  expect_out "release-smoke-test-url: https://127.0.0.1:$PORT"
+}
+
+test_https_switch_note_as_github_annotation() {
+  serve '{"'"$MARKER"'": ['"$FORCED_HTTPS"'], "https '"$MARKER"'": [{"status": 200, "body": "R1"}], '"$HEALTHY"'}'
+  smoke --redirects none --github
+  expect_rc 0
+  expect_out '::notice::http:// redirige su https://'
+}
+
+test_no_url_line_without_switch() {
+  serve '{"'"$MARKER"'": [{"status": 200, "body": "R1"}], '"$HEALTHY"'}'
+  smoke --redirects none
+  expect_rc 0
+  expect_no_out 'release-smoke-test-url:'
+}
+
+test_server_redirect_to_other_host_stops() {
+  serve '{"'"$MARKER"'": [{"status": 301, "body": "Moved", "headers": {"Location": "https://altro.example/release.txt"}}], '"$HEALTHY"'}'
+  smoke --redirects none --timeout 60
+  expect_rc 1
+  expect_out 'HTTP 301'
+  expect_out 'https://altro.example/release.txt'
+  expect_out 'release-smoke-test: redirect'
+  expect_no_out 'release-smoke-test-url:'
+}
+
+test_server_redirect_to_other_path_stops() {
+  serve '{"'"$MARKER"'": [{"status": 302, "body": "Found", "headers": {"Location": "https://127.0.0.1:{port}/login"}}], '"$HEALTHY"'}'
+  smoke --redirects none --timeout 60
+  expect_rc 1
+  expect_out 'HTTP 302'
+  expect_out 'release-smoke-test: redirect'
+  expect_not_requested 'https /login'
+}
+
+test_server_redirect_after_https_switch_stops() {
+  serve '{"'"$MARKER"'": ['"$FORCED_HTTPS"'], "https '"$MARKER"'": [{"status": 301, "headers": {"Location": "https://www.example/release.txt"}}], '"$HEALTHY"'}'
+  smoke --redirects none --timeout 60
+  expect_rc 1
+  expect_out "release-smoke-test-url: https://127.0.0.1:$PORT"
+  expect_out 'release-smoke-test: redirect'
+}
+
+test_runner_redirect_to_other_host_waits_as_before() {
+  serve '{"'"$MARKER"'": [{"status": 301, "body": "Moved", "headers": {"Location": "https://altro.example/release.txt"}}], '"$HEALTHY"'}'
+  smoke --redirects follow
+  expect_rc 1
+  expect_out '(verdetto: mismatch, HTTP 301)'
+  expect_out 'release-smoke-test: timeout'
+  expect_no_out 'release-smoke-test: redirect'
+}
+
+test_runner_switches_to_https_when_forced() {
+  serve '{"'"$MARKER"'": ['"$FORCED_HTTPS"'], "https '"$MARKER"'": [{"status": 200, "body": "R1"}], '"$HEALTHY"'}'
+  smoke --redirects follow
+  expect_rc 0
+  expect_out 'release-smoke-test: online'
+  expect_out "conviene APP_URL=https://127.0.0.1:$PORT nel .env"
+  expect_out "release-smoke-test-url: https://127.0.0.1:$PORT"
+  expect_requested 'https /up'
+  expect_requested 'https /'
 }
 
 # --- decisions-script --------------------------------------------------------
@@ -551,11 +642,11 @@ test_decisions_override_default() {
 exit 0
 EOF
   chmod +x "$WORK/sempre-match.sh"
-  serve '{"/release.txt": [{"status": 200, "body": "<!DOCTYPE html><html>R1</html>"}], '"$HEALTHY"'}'
+  serve '{"'"$MARKER"'": [{"status": 200, "body": "<!DOCTYPE html><html>R1</html>"}], '"$HEALTHY"'}'
   smoke --decisions "$WORK/sempre-match.sh"
   expect_rc 0
   expect_out 'release-smoke-test: online'
-  serve '{"/release.txt": [{"status": 403, "body": "<title>Just a moment...</title>"}], '"$HEALTHY"'}'
+  serve '{"'"$MARKER"'": [{"status": 403, "body": "<title>Just a moment...</title>"}], '"$HEALTHY"'}'
   smoke --decisions "$WORK/sempre-match.sh"
   expect_rc 0
   expect_out 'release-smoke-test: online'
