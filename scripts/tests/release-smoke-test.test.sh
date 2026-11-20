@@ -10,7 +10,7 @@
 #   TEST_SHELL  la shell con cui lanciare il module (default: dash se c'è,
 #               altrimenti sh): il module deve girare su una shell POSIX minima
 #
-# Dipendenze: python3, curl, openssl.
+# Dipendenze: python3, curl, openssl, pgrep (procps).
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -269,14 +269,19 @@ test_marker_dir_not_writable() {
 # segnale ignorato all'avvio non si può più intercettare. Sostituisce con exec la
 # shell che lo chiama, così con 'spawn &' $! è il module e il suo gruppo: va
 # chiamato solo in background o in una pipeline, mai al posto di un comando.
-spawn() {
+spawn_module() {
   exec python3 -I -c '
 import os, signal, sys
 for s in (signal.SIGINT, signal.SIGPIPE):
     signal.signal(s, signal.SIG_DFL)
 os.setsid()
 os.execvp(sys.argv[1], sys.argv[1:])
-' "$TEST_SHELL" "$MODULE" --url "$URL" --release R1 --interval 1 --marker-dir "$PUBLIC" "$@"
+' "$TEST_SHELL" "$MODULE" --url "$URL" --release R1 --interval 1 "$@"
+}
+
+# spawn_module con il marcatore scritto e rimosso dal module nella public/
+spawn() {
+  spawn_module --marker-dir "$PUBLIC" "$@"
 }
 
 # Senza un'interruzione gestita il marcatore resterebbe fino al timeout (30s):
@@ -318,6 +323,45 @@ test_marker_removed_when_output_closes() {
   durata=$(($(date +%s) - inizio))
   expect_public_empty
   [ "$durata" -lt 8 ] || fail "il module ha continuato fino al timeout dopo la chiusura dell'output (${durata}s)"
+}
+
+# Lo step dell'action, con smoke-from 'runner', annulla il module con un TERM al
+# solo processo che ha lanciato, non al suo gruppo: dopo il segnale non deve
+# restare nessun processo del module, nemmeno la subshell che fa il lavoro. Il
+# comando che il module sta aspettando (sleep, o curl con il suo --max-time) può
+# finire da sé, orfano, ed è un limite accettato: qui l'intervallo è di 1s e il
+# controllo ne concede 3. Con --marker-dir la trap scatta quando quel comando
+# finisce, e solo allora il marcatore sparisce.
+terminated_alone() {
+  serve '{"'"$MARKER"'": ['"$NOT_FOUND"'], '"$HEALTHY"'}'
+  spawn_module --timeout 30 "$@" > "$WORK/out" 2>&1 &
+  pid=$!
+  i=0
+  while ! requested "$MARKER" && [ "$i" -lt 100 ]; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+  requested "$MARKER" || fail "il module non è arrivato all'attesa del marcatore"
+  kill -s TERM "$pid" || fail "il module non esiste: il segnale non è arrivato"
+  wait "$pid"
+  i=0
+  while pgrep -g "$pid" > /dev/null && [ "$i" -lt 60 ]; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+  if pgrep -g "$pid" > /dev/null; then
+    fail "dopo il TERM restano processi del module: $(pgrep -a -g "$pid" | tr '\n' ';')"
+  fi
+  kill -s KILL -- "-$pid" 2> /dev/null
+  OUT="$(cat "$WORK/out")"
+}
+
+test_module_gone_on_term() { terminated_alone; }
+
+test_module_gone_on_term_with_marker_dir() {
+  fresh_public
+  terminated_alone --marker-dir "$PUBLIC"
+  expect_public_empty
 }
 
 # --- verdetti di default ----------------------------------------------------
