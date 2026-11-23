@@ -4,7 +4,11 @@ on:
   pull_request:
     branches-ignore: ["main", "dev"]
     paths:
-      - "**/*.{js,jsx,ts,tsx,vue}"
+      - "**/*.js"
+      - "**/*.jsx"
+      - "**/*.ts"
+      - "**/*.tsx"
+      - "**/*.vue"
       - "eslint.config.*"
       - "package.json"
       - "package-lock.json"
