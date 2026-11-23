@@ -20,6 +20,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-phpstan-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   phpstan:
     name: PHPStan

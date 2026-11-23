@@ -12,6 +12,10 @@ on:
       GH_TOKEN:
         required: false
 
+concurrency:
+  group: ${{ github.workflow }}-prettier-check-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   prettier-check:
     runs-on: ubuntu-latest

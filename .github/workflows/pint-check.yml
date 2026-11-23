@@ -12,6 +12,10 @@ on:
       GH_TOKEN:
         required: false
 
+concurrency:
+  group: ${{ github.workflow }}-pint-check-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   pint-check:
     runs-on: ubuntu-latest
