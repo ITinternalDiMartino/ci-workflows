@@ -4,7 +4,7 @@ on:
   pull_request:
     branches-ignore: ["main", "dev"]
     paths:
-      - "**.php"
+      - "**/*.php"
       - "pint.json"
       - "composer.lock"
       - ".github/workflows/pint-check.yml"
