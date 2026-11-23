@@ -10,8 +10,16 @@ on:
       - "composer.lock"
       - ".github/workflows/phpstan.yml"
 
+permissions:
+  contents: read
+
 jobs:
-  call-workflow:
+  phpstan:
     uses: ITinternalDiMartino/ci-workflows/.github/workflows/phpstan.yml@main
+    with:
+      # la versione del PHP del dominio: va allineata al server
+      php-version: "8.4"
+      # dev-standards:install crea phpstan.neon, non phpstan.neon.dist
+      phpstan-config: phpstan.neon
     secrets:
       GH_TOKEN: ${{ secrets.GH_TOKEN }}

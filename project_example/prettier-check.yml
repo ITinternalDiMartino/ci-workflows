@@ -4,11 +4,19 @@ on:
   pull_request:
     branches-ignore: ["main", "dev"]
     paths:
-      - "**/*.js"
-      - "**/*.ts"
-      - "**/*.tsx"
+      - "**/*.{js,jsx,ts,tsx,vue,css,scss,json,md,yml,yaml}"
+      - "prettier.config.*"
+      - ".prettierrc*"
+      - ".prettierignore"
+      - "package.json"
+      - "package-lock.json"
       - ".github/workflows/prettier-check.yml"
 
+permissions:
+  contents: read
+
 jobs:
-  formatters:
+  prettier-check:
     uses: ITinternalDiMartino/ci-workflows/.github/workflows/prettier-check.yml@main
+    secrets:
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
