@@ -66,7 +66,7 @@ jobs:
           echo "::add-matcher::${{ runner.tool_cache }}/phpunit.json"
 
       - name: Configure authentication for private dependencies
-        uses: ITinternalDiMartino/ci-workflows/.github/actions/private-deps-auth@main-v2
+        uses: ITinternalDiMartino/ci-workflows/.github/actions/private-deps-auth@main
         with:
           token: ${{ secrets.GH_TOKEN }}
 
