@@ -10,9 +10,7 @@ on:
       - "phpunit.xml.dist"
       - "testbench.yaml"
       - ".github/workflows/pest-packages.yml"
-      # cartelle in più di dev-standards:
-      # - "configs/**"
-      # - "stubs/**"
+      # aggiungere le altre cartelle di sorgente del pacchetto oltre a src/
 
 permissions:
   contents: read
@@ -20,10 +18,9 @@ permissions:
 jobs:
   pest-packages:
     uses: ITinternalDiMartino/ci-workflows/.github/workflows/pest-packages.yml@main
+    # le versioni vanno allineate ai vincoli di composer.json
     with:
-      # va allineata ai vincoli di composer.json
       php-versions: '["8.3"]'
-      # va allineata ai vincoli di composer.json
       laravel-versions: '["13.*", "12.*"]'
     secrets:
       GH_TOKEN: ${{ secrets.GH_TOKEN }}
