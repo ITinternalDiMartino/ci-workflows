@@ -251,7 +251,7 @@ jobs:
           tools: composer:v2
 
       - name: Configure authentication for private dependencies
-        uses: ITinternalDiMartino/ci-workflows/.github/actions/private-deps-auth@main-v2
+        uses: ITinternalDiMartino/ci-workflows/.github/actions/private-deps-auth@main
         with:
           token: ${{ secrets.GH_TOKEN }}
           required: "true"
@@ -723,7 +723,7 @@ jobs:
       # che il deploy non tocca, che è anche quello che sfida gli IP dei runner.
       - name: Smoke test
         id: smoke
-        uses: ITinternalDiMartino/ci-workflows/.github/actions/release-smoke-test@main-v2
+        uses: ITinternalDiMartino/ci-workflows/.github/actions/release-smoke-test@main
         with:
           url: ${{ steps.appurl.outputs.url }}
           release: ${{ env.RELEASE }}
