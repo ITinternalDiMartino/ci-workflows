@@ -4,7 +4,17 @@ on:
   pull_request:
     branches-ignore: ["main", "dev"]
     paths:
-      - "**/*.{js,jsx,ts,tsx,vue,css,scss,json,md,yml,yaml}"
+      - "**/*.js"
+      - "**/*.jsx"
+      - "**/*.ts"
+      - "**/*.tsx"
+      - "**/*.vue"
+      - "**/*.css"
+      - "**/*.scss"
+      - "**/*.json"
+      - "**/*.md"
+      - "**/*.yml"
+      - "**/*.yaml"
       - "prettier.config.*"
       - ".prettierrc*"
       - ".prettierignore"
