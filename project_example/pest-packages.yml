@@ -1,0 +1,26 @@
+name: Pest Packages
+
+on:
+  pull_request:
+    # i pacchetti aprono le PR verso main: nessun branches-ignore
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "composer.json"
+      - "phpunit.xml.dist"
+      - "testbench.yaml"
+      - ".github/workflows/pest-packages.yml"
+      # aggiungere le altre cartelle di sorgente del pacchetto oltre a src/
+
+permissions:
+  contents: read
+
+jobs:
+  pest-packages:
+    uses: ITinternalDiMartino/ci-workflows/.github/workflows/pest-packages.yml@main
+    # le versioni vanno allineate ai vincoli di composer.json
+    with:
+      php-versions: '["8.3"]'
+      laravel-versions: '["13.*", "12.*"]'
+    secrets:
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
