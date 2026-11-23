@@ -5,16 +5,20 @@ on:
     branches-ignore: ["main", "dev"]
     paths:
       - "**/*.php"
-      - ".github/workflows/run-tests.yml"
+      - ".github/workflows/pest.yml"
       - "phpunit.xml.dist"
       - "composer.json"
       - "composer.lock"
 
+permissions:
+  contents: read
+
 jobs:
-  call-workflow:
+  pest:
     uses: ITinternalDiMartino/ci-workflows/.github/workflows/pest.yml@main
     with:
-      php-versions: '["8.3"]'
+      # la versione del PHP del dominio: va allineata al server
+      php-versions: '["8.4"]'
       # database: pgsql   # default mysql
     secrets:
       GH_TOKEN: ${{ secrets.GH_TOKEN }}

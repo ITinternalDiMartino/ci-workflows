@@ -27,6 +27,10 @@ on:
       GH_TOKEN:
         required: true
 
+concurrency:
+  group: ${{ github.workflow }}-pest-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   laravel-tests:
     runs-on: ubuntu-latest

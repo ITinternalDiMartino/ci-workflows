@@ -4,11 +4,17 @@ on:
   pull_request:
     branches-ignore: ["main", "dev"]
     paths:
-      - "**/*.js"
-      - "**/*.ts"
-      - "**/*.tsx"
+      - "**/*.{js,jsx,ts,tsx,vue}"
+      - "eslint.config.*"
+      - "package.json"
+      - "package-lock.json"
       - ".github/workflows/eslint.yml"
 
+permissions:
+  contents: read
+
 jobs:
-  call-workflow:
+  eslint:
     uses: ITinternalDiMartino/ci-workflows/.github/workflows/eslint.yml@main
+    secrets:
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}

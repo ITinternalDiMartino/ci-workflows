@@ -10,10 +10,16 @@ on:
       - "package.json"
       - "package-lock.json"
       - "vitest.config.ts"
-      - ".github/workflows/run-frontend-tests.yml"
+      - ".github/workflows/vitest.yml"
+
+permissions:
+  contents: read
 
 jobs:
-  call-workflow:
+  vitest:
     uses: ITinternalDiMartino/ci-workflows/.github/workflows/vitest.yml@main
+    with:
+      # la versione del PHP del dominio: va allineata al server
+      php-version: "8.4"
     secrets:
       GH_TOKEN: ${{ secrets.GH_TOKEN }}
