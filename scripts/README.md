@@ -231,9 +231,16 @@ niente:
 1. archivia in `shared/000-legacy.tar.gz` il contenuto di `$BASE` escluse
    `releases/`, `shared/`, `tmp/` e `current`, con `tar -h`: i symlink sono
    dereferenziati, quindi l'archivio contiene il `.env` e lo `storage/` veri ed è
-   una fotografia completa dello stato pre-migrazione. `chmod 600`;
-2. estrae l'archivio in `releases/000-legacy/` saltando `.env`, `storage/` e, se
-   era un symlink, `public/storage`. I path assoluti di `bootstrap/cache/config.php`
+   una fotografia completa dello stato pre-migrazione. `chmod 600`. Accanto
+   scrive `shared/000-legacy.voci`, l'elenco delle voci di primo livello
+   dell'archivio (`chmod 600`), che `cleanup` usa al posto dell'archivio;
+2. copia il codice in `releases/000-legacy/` direttamente da `$BASE`, con lo
+   stesso `tar -h` in una pipe senza compressione, saltando anche `.env`,
+   `storage/` e, se è un symlink, `public/storage`. Non legge l'archivio: estrarre
+   da lì vorrebbe dire decomprimere anche tutto lo `storage/` per scartarlo. Il
+   codice viene letto una seconda volta, pochi minuti dopo l'archivio; durante la
+   fase non arrivano deploy, quindi i file sono gli stessi. I path assoluti di
+   `bootstrap/cache/config.php`
    vengono riscritti verso la copia: puntavano a `$BASE/storage` e a
    `$BASE/resources`, che dopo `cleanup` non esistono più;
 3. dà ad Apache l'accesso che ha in una release del deploy (`o+x` sulla radice
@@ -253,10 +260,19 @@ niente:
 Prima di cominciare controlla che il sito sia già sano, con il criterio dello smoke
 test, e che ci sia spazio per archivio e copia.
 
+Durante archivio e copia stampa una riga di avanzamento circa ogni GB elaborato,
+con `--checkpoint` di GNU tar: `   1000 / 69204 MB (1%)`. Il totale è quello
+misurato da `du` nel controllo dello spazio, non compresso; la percentuale è una
+stima e si ferma a 100.
+
 **`cleanup`** cancella dalla home i file originali. Gira solo se `current` risolve
 in `releases/000-legacy` e lo smoke test è verde. Cancella solo le voci che sono
 nell'archivio e che la copia contiene: quello che è comparso in `$BASE` dopo
 l'archivio resta dov'è ed è elencato. `shared/000-legacy.tar.gz` non lo tocca.
+Le voci le legge da `shared/000-legacy.voci`, senza decomprimere l'archivio. Un
+archivio creato da una versione precedente dello script non ha l'elenco, e uno
+rifatto a mano è più nuovo dell'elenco: in questi casi le legge dall'archivio con
+`tar -tzf`, stampando i MB letti circa ogni GB.
 
 ## La trappola: `current` creata come directory
 
@@ -368,10 +384,12 @@ non ha cancellato niente e si rilancia. Una fase su uno stato già completo dice
 - **Non cancella `current` se è una directory.**
 - **Non cancella `shared/000-legacy.tar.gz`.**
 - **Non crea dominio, database, chiave SSH né `deploy.yml`.**
-- **Nessuna suite di test per `setup-releases.sh`**: lo script girerà una manciata
-  di volte, e il prezzo è pagato dalla loquacità di `recon`. La suite esiste invece
-  per lo smoke test della Release, che gira a ogni deploy di ogni progetto (vedi
-  sotto).
+- **Nessuna suite di test per `recon`, `bridge`, `shared` e `vars`**: lo script
+  girerà una manciata di volte, e il prezzo è pagato dalla loquacità di `recon`.
+  `scripts/tests/setup-releases.test.sh` copre solo i file che `legacy` e
+  `cleanup` archiviano, copiano e cancellano, con uno stub al posto del module
+  dello smoke test. La suite completa esiste per lo smoke test della Release, che
+  gira a ogni deploy di ogni progetto (vedi sotto).
 
 # release-smoke-test.sh
 
