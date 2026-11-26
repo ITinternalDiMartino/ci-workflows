@@ -3,7 +3,8 @@ name: Check workflows
 # Protegge i repository che chiamano i workflow di ci-workflows: actionlint trova
 # gli errori di sintassi ed espressione, check-workflow-references.sh trova i
 # riferimenti a workflow rinominati o cancellati, la suite dello smoke test della
-# Release blocca una regressione nei verdetti prima che arrivi a un deploy.
+# Release blocca una regressione nei verdetti prima che arrivi a un deploy, la
+# suite di setup-releases protegge i file che legacy e cleanup copiano e cancellano.
 on:
   pull_request:
   push:
@@ -64,3 +65,19 @@ jobs:
 
       - name: Run the suite
         run: scripts/tests/release-smoke-test.test.sh
+
+  setup-releases:
+    name: setup-releases
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Lo script gira sui server cPanel come 'sh -s': shellcheck lo legge come
+      # POSIX sh, e la suite lo lancia con dash.
+      - name: Lint the script and its suite
+        run: shellcheck -s sh scripts/setup-releases.sh scripts/tests/setup-releases.test.sh
+
+      - name: Run the suite
+        run: scripts/tests/setup-releases.test.sh
