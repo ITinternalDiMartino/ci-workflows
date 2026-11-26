@@ -239,7 +239,8 @@ niente:
    `storage/` e, se è un symlink, `public/storage`. Non legge l'archivio: estrarre
    da lì vorrebbe dire decomprimere anche tutto lo `storage/` per scartarlo. Il
    codice viene letto una seconda volta, pochi minuti dopo l'archivio; durante la
-   fase non arrivano deploy, quindi i file sono gli stessi. I path assoluti di `bootstrap/cache/config.php`
+   fase non arrivano deploy, quindi i file sono gli stessi. I path assoluti di
+   `bootstrap/cache/config.php`
    vengono riscritti verso la copia: puntavano a `$BASE/storage` e a
    `$BASE/resources`, che dopo `cleanup` non esistono più;
 3. dà ad Apache l'accesso che ha in una release del deploy (`o+x` sulla radice
@@ -269,8 +270,9 @@ in `releases/000-legacy` e lo smoke test è verde. Cancella solo le voci che son
 nell'archivio e che la copia contiene: quello che è comparso in `$BASE` dopo
 l'archivio resta dov'è ed è elencato. `shared/000-legacy.tar.gz` non lo tocca.
 Le voci le legge da `shared/000-legacy.voci`, senza decomprimere l'archivio. Un
-archivio creato da una versione precedente dello script non ha l'elenco: allora
-le legge dall'archivio con `tar -tzf`, stampando i MB letti circa ogni GB.
+archivio creato da una versione precedente dello script non ha l'elenco, e uno
+rifatto a mano è più nuovo dell'elenco: in questi casi le legge dall'archivio con
+`tar -tzf`, stampando i MB letti circa ogni GB.
 
 ## La trappola: `current` creata come directory
 
@@ -382,12 +384,12 @@ non ha cancellato niente e si rilancia. Una fase su uno stato già completo dice
 - **Non cancella `current` se è una directory.**
 - **Non cancella `shared/000-legacy.tar.gz`.**
 - **Non crea dominio, database, chiave SSH né `deploy.yml`.**
-- **Una suite di test solo per `legacy` e `cleanup`**: lo script girerà una
-  manciata di volte, e per il resto il prezzo è pagato dalla loquacità di `recon`.
-  `scripts/tests/setup-releases.test.sh` copre solo i file che quelle due fasi
-  archiviano, copiano e cancellano, con uno stub al posto del module dello smoke
-  test. La suite completa esiste per lo smoke test della Release, che gira a ogni
-  deploy di ogni progetto (vedi sotto).
+- **Nessuna suite di test per `recon`, `bridge`, `shared` e `vars`**: lo script
+  girerà una manciata di volte, e il prezzo è pagato dalla loquacità di `recon`.
+  `scripts/tests/setup-releases.test.sh` copre solo i file che `legacy` e
+  `cleanup` archiviano, copiano e cancellano, con uno stub al posto del module
+  dello smoke test. La suite completa esiste per lo smoke test della Release, che
+  gira a ogni deploy di ogni progetto (vedi sotto).
 
 # release-smoke-test.sh
 
