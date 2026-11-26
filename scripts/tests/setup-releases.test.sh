@@ -54,7 +54,8 @@ export SETUP_RELEASES_CHECKPOINT
 PASSED=0
 FAILED=0
 CURRENT_FAILED=''
-OUT=''
+OUT=""
+RC=""
 
 fail() {
   CURRENT_FAILED=1
@@ -215,6 +216,19 @@ test_cleanup_without_entry_list_reads_archive_with_progress() {
   for v in artisan app public vendor 'nome con spazi.txt'; do
     expect_absent "$BASE/$v"
   done
+}
+
+# Un archivio rifatto a mano dopo legacy è più nuovo dell'elenco: l'elenco
+# descrive un altro archivio, e si torna a leggere quello presente.
+test_cleanup_ignores_entry_list_older_than_archive() {
+  fresh_site
+  fase legacy
+  expect_rc 0
+  touch -d '2000-01-01' "$BASE/shared/000-legacy.voci"
+  : > "$TAR_LOG"
+  fase cleanup
+  expect_rc 0
+  grep -q -- '-tzf' "$TAR_LOG" || fail "cleanup ha usato un elenco più vecchio dell'archivio"
 }
 
 test_cleanup_refuses_when_entry_missing_from_release() {

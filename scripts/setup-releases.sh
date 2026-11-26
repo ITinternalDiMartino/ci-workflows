@@ -766,7 +766,8 @@ spazio_sufficiente() {
 }
 
 # Avanzamento dei passi su archivio con --checkpoint di GNU tar, che sui server
-# c'è già (pv no): una riga ogni CHECKPOINT record da 10 KiB, quindi 100000 sono
+# c'è già (pv no). Con exec= e non echo=: i formati di echo (%u, %T) esistono
+# solo da tar 1.28, TAR_CHECKPOINT c'è anche nella 1.26 di CentOS 7: una riga ogni CHECKPOINT record da 10 KiB, quindi 100000 sono
 # circa 1 GB. La variabile serve alla suite, per vedere le righe su pochi KB.
 # Una riga per checkpoint e niente \r, perché l'output esce da ssh ... 'sh -s'.
 CHECKPOINT="${SETUP_RELEASES_CHECKPOINT:-100000}"
@@ -777,14 +778,14 @@ CHECKPOINT="${SETUP_RELEASES_CHECKPOINT:-100000}"
 # compressi, come i totali di du.
 # shellcheck disable=SC2016 # le espansioni sono della shell lanciata da tar
 avanzamento() {
-  a='kb=$((TAR_CHECKPOINT * TAR_BLOCKING_FACTOR / 2));'
+  azione='kb=$((TAR_CHECKPOINT * TAR_BLOCKING_FACTOR / 2));'
   if [ "${1:-0}" -gt 0 ]; then
-    a="$a"' p=$((kb * 100 / '"$1"')); [ "$p" -le 100 ] || p=100;'
-    a="$a"' printf "   %s / %s MB (%s%%)\n" $((kb / 1024)) '"$(($1 / 1024))"' "$p" >&2'
+    azione="$azione"' p=$((kb * 100 / '"$1"')); [ "$p" -le 100 ] || p=100;'
+    azione="$azione"' printf "   %s / %s MB (%s%%)\n" $((kb / 1024)) '"$(($1 / 1024))"' "$p" >&2'
   else
-    a="$a"' printf "   %s MB letti\n" $((kb / 1024)) >&2'
+    azione="$azione"' printf "   %s MB letti\n" $((kb / 1024)) >&2'
   fi
-  printf '%s' "--checkpoint-action=exec=$a"
+  printf '%s' "--checkpoint-action=exec=$azione"
 }
 
 # Le voci di primo livello che tar mette nell'archivio, una per riga.
@@ -847,8 +848,9 @@ legacy() {
     # fotografia completa dello stato pre-migrazione. Si scrive a parte e si
     # rinomina, così un archivio a metà non passa mai per finito.
     # L'elenco delle voci si scrive prima: una voce comparsa durante tar finisce
-    # nell'archivio ma non nell'elenco, e cleanup la lascia dov'è. Il contrario,
-    # cancellare qualcosa che l'archivio non ha, non può succedere.
+    # nell'archivio ma non nell'elenco, e cleanup la lascia dov'è. Il contrario
+    # richiede una voce di primo livello che sparisce mentre tar legge e ricompare
+    # prima della copia: cleanup la cancella, ma la copia del passo 2 ce l'ha.
     (umask 077 && voci_base > "$ELENCO.part") || muori "non riesco a scrivere $ELENCO.part: niente di modificato"
     rc=0
     (umask 077 && tar -czhf "$ARCHIVIO.part" -C "$BASE" \
@@ -862,6 +864,8 @@ legacy() {
       *) rm -f "$ARCHIVIO.part" "$ELENCO.part"; muori "tar è uscito con $rc: nessun archivio, niente di modificato" ;;
     esac
     chmod 600 "$ARCHIVIO.part" "$ELENCO.part"
+    # scritto prima, ma non più vecchio dell'archivio: cleanup lo confronta
+    touch "$ELENCO.part"
     mv "$ARCHIVIO.part" "$ARCHIVIO"
     mv "$ELENCO.part" "$ELENCO"
     say "   $(du -h "$ARCHIVIO" | cut -f1), permessi $(stat -c '%a' "$ARCHIVIO")"
@@ -884,19 +888,19 @@ legacy() {
     rc=0
     # shellcheck disable=SC2086
     {
-      rc_c=0
+      rc_lettura=0
       tar -C "$BASE" -chf - --exclude=./releases --exclude=./shared --exclude=./tmp \
         --exclude=./current --exclude=./.env --exclude=./storage $ESCL_PS \
-        "--checkpoint=$CHECKPOINT" "$(avanzamento "$codice_kb")" . || rc_c=$?
-      echo "$rc_c" > "$LEGACY.part.rc"
+        "--checkpoint=$CHECKPOINT" "$(avanzamento "$codice_kb")" . || rc_lettura=$?
+      echo "$rc_lettura" > "$LEGACY.part.rc"
     } | tar -xpf - -C "$LEGACY.part" || rc=$?
-    rc_c="$(cat "$LEGACY.part.rc" 2> /dev/null || echo '?')"
+    rc_lettura="$(cat "$LEGACY.part.rc" 2> /dev/null || echo '?')"
     rm -f "$LEGACY.part.rc"
     [ "$rc" = 0 ] || { rm -rf "$LEGACY.part"; muori "copia fallita (tar in scrittura è uscito con $rc): current non è stato toccato"; }
-    case "$rc_c" in
+    case "$rc_lettura" in
       0) ;;
       1) nota "tar: alcuni file sono cambiati durante la copia (log, sessioni). La copia è valida" ;;
-      *) rm -rf "$LEGACY.part"; muori "copia fallita (tar in lettura è uscito con $rc_c): current non è stato toccato" ;;
+      *) rm -rf "$LEGACY.part"; muori "copia fallita (tar in lettura è uscito con $rc_lettura): current non è stato toccato" ;;
     esac
     mv "$LEGACY.part" "$LEGACY"
     riscrivi_config_cache
@@ -967,10 +971,12 @@ cleanup() {
   # voci si leggono una per riga, perché un nome può contenere spazi. L'elenco
   # lo scrive legacy accanto all'archivio; un archivio di una versione
   # precedente non ce l'ha, e allora le voci si leggono dall'archivio.
-  if [ -f "$ELENCO" ]; then
+  # legacy rinomina l'elenco dopo l'archivio: un archivio più nuovo è stato
+  # rifatto dopo, e l'elenco non lo descrive.
+  if [ -f "$ELENCO" ] && ! [ "$ARCHIVIO" -nt "$ELENCO" ]; then
     VOCI="$(cat "$ELENCO")"
   else
-    say "manca $ELENCO (archivio di una versione precedente): leggo le voci dall'archivio"
+    say "$ELENCO manca o è più vecchio dell'archivio: leggo le voci dall'archivio"
     VOCI="$(tar -tzf "$ARCHIVIO" "--checkpoint=$CHECKPOINT" "$(avanzamento '')" |
       sed -e 's#^\./##' -e 's#/.*##' | grep -v '^\.\{0,1\}$' | sort -u)"
   fi
